@@ -99,6 +99,10 @@ export function parseSize(text: string): number | null {
 
 export const SIZE_PRESETS = ["500KB", "1MB", "2MB"];
 
+/** Longest-edge presets, in pixels. Only ones smaller than the picture
+ *  are worth offering — the rest would upscale it. */
+export const EDGE_PRESETS = ["1920", "1280", "800"];
+
 export function firstUrl(text: string): string | null {
   return text.match(/https?:\/\/\S+/i)?.[0] ?? null;
 }

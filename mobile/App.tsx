@@ -20,6 +20,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
+  Image,
   Keyboard,
   KeyboardAvoidingView,
   Platform,
@@ -49,6 +50,7 @@ import {
   firstUrl,
   formatBytes,
   kindOf,
+  EDGE_PRESETS,
   parseSize,
   SIZE_PRESETS,
   TARGETS,
@@ -116,6 +118,11 @@ function Studio() {
   const [canData, setCanData] = useState(true);
   /* The engine's upload ceiling. Work done on the phone never meets it. */
   const [maxUploadMb, setMaxUploadMb] = useState(0);
+  /* The picture's own size. Presets and the "now" label both need it, and
+     guessing would put the wrong numbers on screen. */
+  const [natural, setNatural] = useState<{ width: number; height: number } | null>(null);
+  /* Refinements stay folded away — most conversions want none of them. */
+  const [advanced, setAdvanced] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
   const jobRef = useRef<string | null>(null);
@@ -141,6 +148,14 @@ function Studio() {
     kind === "image" && longestEdge.trim() ? Number(longestEdge) : null;
   /* "auto" is how the engine is asked to choose, not a file extension. */
   const label = target === "auto" ? "the best fit" : `.${target}`;
+  /* What the folded refinements add up to, so hiding them never hides a
+     setting that is doing something. */
+  const optionSummary = [
+    edge ? `${edge} px` : "",
+    maxBytes ? `max ${maxSize.replace(/(KB|MB)/, " $1")}` : ""
+  ]
+    .filter(Boolean)
+    .join(" · ");
   /* Work the phone does itself never travels, so the engine's ceiling is not
      its problem. Everything else has to fit through it. */
   const staysOnPhone =
@@ -169,6 +184,24 @@ function Studio() {
   const onLayoutRoot = useCallback(() => {
     if (fontsLoaded) SplashScreen.hideAsync().catch(() => {});
   }, [fontsLoaded]);
+
+  /* Read the picture's own dimensions, so the presets can be the ones that
+     actually make it smaller rather than a fixed list that might upscale. */
+  useEffect(() => {
+    if (kind !== "image" || !picked) {
+      setNatural(null);
+      return;
+    }
+    let alive = true;
+    Image.getSize(
+      picked.uri,
+      (width, height) => alive && setNatural({ width, height }),
+      () => alive && setNatural(null)
+    );
+    return () => {
+      alive = false;
+    };
+  }, [kind, picked]);
 
   /* Yesterday's results are already saved or forgotten — don't hoard them. */
   useEffect(() => {
@@ -434,6 +467,9 @@ function Studio() {
   const startOver = () => {
     setPicked(null);
     setUrl("");
+    setMaxSize("");
+    setLongestEdge("");
+    setAdvanced(false);
     reset();
   };
 
@@ -644,62 +680,6 @@ function Studio() {
                 </Tap>
               </View>
             )}
-
-            {/* A size budget — images are the one kind where people arrive
-                with a number in mind rather than a format. */}
-            {mode === "file" && kind === "image" && (
-              <View style={{ gap: 9 }}>
-                <Label>maximum size</Label>
-                <View style={st.chips}>
-                  <Chip
-                    label="no limit"
-                    active={!maxSize}
-                    onPress={() => setMaxSize("")}
-                  />
-                  {SIZE_PRESETS.map((preset) => (
-                    <Chip
-                      key={preset}
-                      label={preset.replace(/(KB|MB)/, " $1")}
-                      active={maxSize === preset}
-                      onPress={() => setMaxSize(preset)}
-                    />
-                  ))}
-                </View>
-                {maxBytes !== null && (
-                  <Body style={{ fontSize: 12, color: c.ink3 }}>
-                    Quality goes before pixels — the picture keeps its size on
-                    screen unless the budget leaves no other way.
-                  </Body>
-                )}
-              </View>
-            )}
-
-            {mode === "file" && kind === "image" && (
-              <View style={{ gap: 9 }}>
-                <Label>width</Label>
-                <View style={st.chips}>
-                  <Chip
-                    label="original"
-                    active={!longestEdge}
-                    onPress={() => setLongestEdge("")}
-                  />
-                  {["1920", "1280", "800"].map((px) => (
-                    <Chip
-                      key={px}
-                      label={`${px} px`}
-                      active={longestEdge === px}
-                      onPress={() => setLongestEdge(px)}
-                    />
-                  ))}
-                </View>
-                {edge !== null && (
-                  <Body style={{ fontSize: 12, color: c.ink3 }}>
-                    The height follows, so the picture keeps its shape.
-                  </Body>
-                )}
-              </View>
-            )}
-
             {/* Targets */}
             {targets.length > 0 && (mode === "url" ? !!url.trim() : !!picked) && (
               <View style={{ gap: 9 }}>
@@ -736,6 +716,92 @@ function Studio() {
                       onPress={() => setTarget(t)}
                     />
                   ))}
+                </View>
+              </View>
+            )}
+
+
+            {/* Refinements, folded away. Most conversions are "this file,
+                that format" and want none of them on screen. */}
+            {mode === "file" && kind === "image" && (
+              <View style={{ gap: 12 }}>
+                <Tap
+                  onPress={() => setAdvanced((v) => !v)}
+                  style={st.moreToggle}
+                  haptic="light"
+                >
+                  <Text style={st.moreSign}>{advanced ? "−" : "+"}</Text>
+                  <Body style={{ fontSize: 12.5, color: c.ink2 }}>
+                    {advanced ? "Fewer options" : "More options"}
+                  </Body>
+                  {!advanced && !!optionSummary && (
+                    <Body style={{ fontSize: 12, color: c.ink3 }}>
+                      {optionSummary}
+                    </Body>
+                  )}
+                </Tap>
+              </View>
+            )}
+
+            {mode === "file" && kind === "image" && advanced && (
+              <View style={st.moreBody}>
+                <View style={{ gap: 9 }}>
+                  <Label>maximum size</Label>
+                  <View style={st.chips}>
+                    <Chip
+                      label="no limit"
+                      active={!maxSize}
+                      onPress={() => setMaxSize("")}
+                    />
+                    {SIZE_PRESETS.map((preset) => (
+                      <Chip
+                        key={preset}
+                        label={preset.replace(/(KB|MB)/, " $1")}
+                        active={maxSize === preset}
+                        onPress={() => setMaxSize(preset)}
+                      />
+                    ))}
+                  </View>
+                  {maxBytes !== null && (
+                    <Body style={{ fontSize: 12, color: c.ink3 }}>
+                      Quality goes before pixels — the picture keeps its size
+                      on screen unless the budget leaves no other way.
+                    </Body>
+                  )}
+                </View>
+
+                <View style={{ gap: 9 }}>
+                  <Label>
+                    {natural
+                      ? `dimensions — now ${natural.width} × ${natural.height}`
+                      : "dimensions"}
+                  </Label>
+                  <View style={st.chips}>
+                    <Chip
+                      label="original"
+                      active={!longestEdge}
+                      onPress={() => setLongestEdge("")}
+                    />
+                    {EDGE_PRESETS.filter(
+                      // Offering 1920 for a 1286px photo would upscale it,
+                      // which is not what a dimensions control is for.
+                      (px) =>
+                        !natural ||
+                        Number(px) < Math.max(natural.width, natural.height)
+                    ).map((px) => (
+                      <Chip
+                        key={px}
+                        label={`${px} px`}
+                        active={longestEdge === px}
+                        onPress={() => setLongestEdge(px)}
+                      />
+                    ))}
+                  </View>
+                  {edge !== null && (
+                    <Body style={{ fontSize: 12, color: c.ink3 }}>
+                      The other side follows, so the picture keeps its shape.
+                    </Body>
+                  )}
                 </View>
               </View>
             )}
@@ -1000,6 +1066,31 @@ const makeStyles = (c: Palette, isDark: boolean) => {
   checkMark: { color: "#fff8f2", fontSize: 12, lineHeight: 14 },
 
   chips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+
+  moreToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: c.line,
+    borderStyle: "dashed"
+  },
+  moreSign: {
+    fontFamily: f.mono,
+    fontSize: 14,
+    lineHeight: 16,
+    color: c.ink2
+  },
+  moreBody: {
+    gap: 16,
+    padding: 14,
+    borderRadius: radius.inner,
+    backgroundColor: c.well
+  },
 
   note: {
     padding: 13,
