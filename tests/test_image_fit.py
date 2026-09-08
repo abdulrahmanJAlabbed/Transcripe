@@ -191,3 +191,76 @@ def test_the_planned_name_is_the_name_that_gets_written(tmp_path):
 def test_keeping_the_source_format_needs_no_guesswork(tmp_path):
     src = photo(tmp_path / "scan.png")
     assert images.planned_extension(src, 100 * KB, None) == "png"
+
+
+# ── every format it claims to read ──────────────────────────────────────────
+
+def written_in(path: Path, ext: str) -> Path:
+    """Save the standard fixture in `ext`, or skip when the codec is absent."""
+    images._pil()  # registers the HEIF/AVIF openers
+    img = Image.open(photo(path.parent / "seed.png"))
+    if ext == "gif":
+        img = img.convert("P")
+    out = path.parent / f"in.{ext}"
+    try:
+        img.save(out)
+    except Exception as exc:  # noqa: BLE001 - codec absence is a skip, not a failure
+        pytest.skip(f"no encoder for .{ext} here ({type(exc).__name__})")
+    return out
+
+
+READABLE = ["png", "jpg", "webp", "bmp", "tiff", "gif", "ico", "heic", "avif"]
+
+
+@pytest.mark.parametrize("ext", READABLE)
+def test_a_budget_works_from_every_format_we_read(tmp_path, ext):
+    """The formats people actually arrive with. .heic especially: phones hand
+    those over, and Pillow registers the container as HEIF, so asking it to
+    write "HEIC" used to fail with a bare KeyError."""
+    src = written_in(tmp_path / "x", ext)
+    out = images.fit_size(src, NULL, output_path=tmp_path / f"out.{ext}",
+                          max_bytes=25 * KB, target_format="auto")
+    assert out.stat().st_size <= 25 * KB
+    Image.open(out).verify()
+
+
+@pytest.mark.parametrize("ext", READABLE)
+def test_a_resize_works_from_every_format_we_read(tmp_path, ext):
+    src = written_in(tmp_path / "x", ext)
+    images.resize_image(src, 120, None, NULL,
+                        output_path=tmp_path / f"small.{ext}")
+    assert (tmp_path / f"small.{ext}").stat().st_size > 0
+
+
+def test_a_vector_source_lands_somewhere_that_can_be_written(tmp_path):
+    """SVG only comes in: it is rasterised on the way past _open_image and
+    there is no writing it back, so keeping the source extension would ask
+    Pillow for the impossible. PNG keeps every pixel of the raster."""
+    pytest.importorskip("cairosvg", reason="cairosvg not installed")
+    svg = tmp_path / "logo.svg"
+    svg.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="200" '
+                   'height="120"><rect width="200" height="120" fill="#246"/></svg>')
+
+    assert images.planned_extension(svg, 40 * KB, "auto") != "svg"
+    out = images.fit_size(svg, NULL, output_path=tmp_path / "out.svg",
+                          max_bytes=40 * KB, target_format="auto")
+    assert out.suffix != ".svg"
+    assert out.stat().st_size <= 40 * KB
+    Image.open(out).verify()
+
+
+@pytest.mark.parametrize("ext", READABLE + ["svg"])
+def test_the_planned_extension_is_always_writable(tmp_path, ext):
+    """planned_extension feeds the wizard's output path and its overwrite
+    guard, so an extension nothing can write there is a promise that breaks
+    only once the work is already done."""
+    images._pil()
+    assert images._writable(ext) == images._writable(images._writable(ext))
+    assert images._writable("svg") == "png"
+
+
+def test_asking_for_a_read_only_format_says_so(tmp_path):
+    src = photo(tmp_path / "src.png")
+    with pytest.raises(ValueError, match="read-only"):
+        images.fit_size(src, NULL, output_path=tmp_path / "o.png",
+                        max_bytes=40 * KB, target_format="svg")

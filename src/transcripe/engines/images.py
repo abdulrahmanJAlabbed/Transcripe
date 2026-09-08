@@ -192,7 +192,9 @@ def resize_image(input_path: Path, width: int | None, height: int | None, consol
     with console.status(f"[bold cyan]Resizing {input_path.name} ({original_w}x{original_h} → {new_size[0]}x{new_size[1]})…[/bold cyan]"):
         img = img.resize(new_size, _pil().LANCZOS)
 
-        out_path = output_path or (input_path.parent / f"{input_path.stem}_resized{input_path.suffix}")
+        out_path = output_path or (
+            input_path.parent
+            / f"{input_path.stem}_resized.{_writable(input_path.suffix)}")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         # Handle alpha channel for jpeg
         if out_path.suffix.lower() in (".jpg", ".jpeg") and img.mode in ("RGBA", "P"):
@@ -268,8 +270,25 @@ _CHROMA_KEEP_ABOVE = 80
 
 def _pil_format(ext: str) -> str:
     ext = ext.lower().lstrip(".")
-    return {"jpg": "JPEG", "jpeg": "JPEG", "tif": "TIFF",
-            "tiff": "TIFF"}.get(ext, ext.upper())
+    return {"jpg": "JPEG", "jpeg": "JPEG", "tif": "TIFF", "tiff": "TIFF",
+            # pillow-heif registers the container as HEIF. ".heic" is one of
+            # its extensions, not a name Pillow will answer to.
+            "heic": "HEIF", "heif": "HEIF", "hif": "HEIF"}.get(ext, ext.upper())
+
+
+def _writable(ext: str) -> str:
+    """The nearest extension Pillow can actually write.
+
+    Some formats only come in. SVG is vector: it is rasterised on the way past
+    _open_image and there is no writing it back, so a resize or a size budget
+    that kept the source extension would be asking for the impossible. PNG is
+    the honest landing place — every pixel survives — and if a budget then
+    rules PNG out, _choose_format carries on from there.
+    """
+    Image = _pil()
+    ext = ext.lower().lstrip(".")
+    Image.registered_extensions()  # loads the plugins that populate SAVE
+    return ext if _pil_format(ext) in Image.SAVE else "png"
 
 
 def _encode(img, ext: str, quality: int | None = None,
@@ -413,7 +432,7 @@ def _choose_format(img, source_ext: str, limit: int | None,
     same picture as JPEG or WebP meets the budget at full resolution. So the
     format changes only when keeping it would cost real detail.
     """
-    ext = source_ext.lower().lstrip(".")
+    ext = _writable(source_ext)
     if limit is None or ext in LOSSY_FORMATS:
         return ext
     if len(_encode(img, ext, None, None, icc)) <= limit:
@@ -434,7 +453,7 @@ def planned_extension(input_path: Path, max_bytes: int | None,
     if target_format and target_format.lower() != "auto":
         return target_format.lower().lstrip(".")
     if not target_format:
-        return source_ext
+        return _writable(source_ext)
     img = _open_image(input_path)
     return _choose_format(img, source_ext, max_bytes, img.info.get("icc_profile"))
 
@@ -469,10 +488,14 @@ def fit_size(input_path: Path, console: Console, output_path: Path | None = None
     source_ext = input_path.suffix.lower().lstrip(".")
     if target_format and target_format.lower() != "auto":
         ext = target_format.lower().lstrip(".")
+        if _writable(ext) != ext:
+            raise ValueError(
+                f"Nothing can write .{ext} — it is a read-only format here. "
+                "Pick png, jpg, webp or avif.")
     elif target_format:
         ext = _choose_format(img, source_ext, max_bytes, icc)
     else:
-        ext = source_ext
+        ext = _writable(source_ext)
     switched = ext != source_ext
 
     out_path = output_path or (input_path.parent / f"{input_path.stem}_fitted.{ext}")
