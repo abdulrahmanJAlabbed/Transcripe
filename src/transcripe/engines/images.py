@@ -121,8 +121,15 @@ def _save_options(img, target_format: str, source: Path | None = None) -> dict:
         # Re-encoding something lossless into lossy WebP throws away detail for
         # no reason; keep it lossless when it arrived that way.
         if source and source.suffix.lower() in LOSSLESS_SOURCES:
-            opts.update(lossless=True, quality=100, method=6)
+            # Lossless output is bit-identical whatever the method, so the
+            # only thing method 6 buys over 4 is ~1% of file size — and it
+            # costs 12x the time (measured: 7.95s vs 0.64s on a 1 MP photo,
+            # which on a small server is the difference between a conversion
+            # and a gateway timeout).
+            opts.update(lossless=True, quality=100, method=4)
         else:
+            # Lossy is the opposite: here the method genuinely buys quality
+            # per byte, and it is cheap — a fifth of a second on that photo.
             opts.update(quality=quality, method=6)
     elif fmt == "avif":
         # AVIF beats WebP at the same quality; keep a lossless source lossless.

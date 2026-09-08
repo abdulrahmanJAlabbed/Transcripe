@@ -55,7 +55,9 @@ deploy_engine() {
     # --force-reinstall: the version rarely changes between deploys, and pip
     # would otherwise decide it already has this one.
     '$API_DIR/venv/bin/pip' install -q --force-reinstall --no-deps '/tmp/$(basename "$WHEEL")'
-    '$API_DIR/venv/bin/pip' install -q 'fastapi>=0.115' uvicorn python-multipart yt-dlp Pillow pillow-heif
+    # cairosvg reads SVG, which Pillow cannot; without it every .svg input
+    # fails on the server while working fine locally.
+    '$API_DIR/venv/bin/pip' install -q 'fastapi>=0.115' uvicorn python-multipart yt-dlp Pillow pillow-heif cairosvg
     rm -f '/tmp/$(basename "$WHEEL")'
     sudo systemctl restart transcripe-api
     sleep 4

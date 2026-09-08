@@ -652,6 +652,24 @@ def test_lossless_source_stays_lossless_into_webp(tmp_path):
     assert from_jpg.get("lossless") is not True
 
 
+def test_lossless_webp_does_not_pay_for_effort_it_cannot_use(tmp_path):
+    """Lossless output is bit-identical at any method, so a higher one buys
+    only ~1% of file size — and costs 12x the time (7.95s vs 0.64s measured
+    on a 1 MP photo). On a small server that was the difference between a
+    conversion and a gateway timeout, so lossless stays off the top setting
+    while lossy, where effort genuinely buys quality per byte, keeps it."""
+    PIL = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    from transcripe.engines.images import _save_options
+
+    img = PIL.new("RGB", (32, 32), (7, 8, 9))
+    lossless = _save_options(img, "webp", tmp_path / "a.png")
+    lossy = _save_options(img, "webp", tmp_path / "a.jpg")
+
+    assert lossless.get("lossless") is True
+    assert lossless["method"] < 6, "lossless is paying for effort it cannot use"
+    assert lossy["method"] == 6, "lossy still wants the effort — it buys quality"
+
+
 def test_colour_profile_survives_conversion(tmp_path):
     """Dropping the ICC profile shifts every colour in the picture."""
     PIL = pytest.importorskip("PIL.Image", reason="Pillow not installed")
