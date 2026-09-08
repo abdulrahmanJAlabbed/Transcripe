@@ -100,6 +100,8 @@ function Studio() {
   const [linkQuality, setLinkQuality] = useState<"best" | "compatible">("best");
   /* Images only: an upload limit to land under, as typed ("500KB"). */
   const [maxSize, setMaxSize] = useState("");
+  /* Images only: longest edge in pixels, as typed. Blank = leave it alone. */
+  const [longestEdge, setLongestEdge] = useState("");
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [status, setStatus] = useState("");
@@ -131,17 +133,20 @@ function Studio() {
      a number of kilobytes rather than a different format. */
   const maxBytes =
     kind === "image" && maxSize.trim() ? parseSize(maxSize) : null;
+  const edge =
+    kind === "image" && longestEdge.trim() ? Number(longestEdge) : null;
 
   /* Arming a budget changes the question from "which format" to "how small",
      so let the engine choose until the user takes the choice back. */
   useEffect(() => {
     if (kind !== "image") {
       if (maxSize) setMaxSize("");
+      if (longestEdge) setLongestEdge("");
       return;
     }
     if (maxBytes && target !== "auto") setTarget("auto");
     if (!maxBytes && target === "auto") setTarget(TARGETS.image.main[0]);
-  }, [kind, maxBytes, target, maxSize]);
+  }, [kind, maxBytes, target, maxSize, longestEdge]);
 
   const onLayoutRoot = useCallback(() => {
     if (fontsLoaded) SplashScreen.hideAsync().catch(() => {});
@@ -333,7 +338,11 @@ function Studio() {
             name: picked!.name,
             mimeType: picked!.mimeType,
             format: target,
-            maxSize: maxBytes ?? undefined
+            maxSize: maxBytes ?? undefined,
+            // The phone can't cheaply read the picture's orientation before
+            // upload, so the longest edge goes as a width cap and the engine
+            // scales the other side to match.
+            width: edge
           },
           (fraction) => {
             const pct = Math.round(fraction * 100);
@@ -621,6 +630,32 @@ function Studio() {
                   <Body style={{ fontSize: 12, color: c.ink3 }}>
                     Quality goes before pixels — the picture keeps its size on
                     screen unless the budget leaves no other way.
+                  </Body>
+                )}
+              </View>
+            )}
+
+            {mode === "file" && kind === "image" && (
+              <View style={{ gap: 9 }}>
+                <Label>width</Label>
+                <View style={st.chips}>
+                  <Chip
+                    label="original"
+                    active={!longestEdge}
+                    onPress={() => setLongestEdge("")}
+                  />
+                  {["1920", "1280", "800"].map((px) => (
+                    <Chip
+                      key={px}
+                      label={`${px} px`}
+                      active={longestEdge === px}
+                      onPress={() => setLongestEdge(px)}
+                    />
+                  ))}
+                </View>
+                {edge !== null && (
+                  <Body style={{ fontSize: 12, color: c.ink3 }}>
+                    The height follows, so the picture keeps its shape.
                   </Body>
                 )}
               </View>

@@ -663,6 +663,17 @@ a {
   color: var(--paper);
 }
 
+.opt-note {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: var(--ink-3);
+  opacity: 0.85;
+}
+.dim-input {
+  width: 78px;
+}
 .size-input {
   flex: none;
   width: 104px;

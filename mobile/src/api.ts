@@ -164,6 +164,9 @@ export async function convertFile(
     format: string;
     /** Images only: an upload limit to land under, in bytes. */
     maxSize?: number;
+    /** Images only: output pixels. Either alone keeps the aspect ratio. */
+    width?: number | null;
+    height?: number | null;
   },
   onProgress?: (fraction: number, stage: string) => void,
   onJob?: (job: string) => void,
@@ -179,6 +182,8 @@ export async function convertFile(
   body.append("targetFormat", input.format);
   body.append("deliver", "job");
   if (input.maxSize) body.append("maxSize", String(input.maxSize));
+  if (input.width) body.append("width", String(input.width));
+  if (input.height) body.append("height", String(input.height));
 
   const res = await fetch(`${API}/api/convert/file`, {
     method: "POST",

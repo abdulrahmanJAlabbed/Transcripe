@@ -197,7 +197,10 @@ def resize_image(input_path: Path, width: int | None, height: int | None, consol
         # Handle alpha channel for jpeg
         if out_path.suffix.lower() in (".jpg", ".jpeg") and img.mode in ("RGBA", "P"):
             img = img.convert("RGB")
-        img.save(out_path)
+        # Without these, a bare save() re-encodes a JPEG at Pillow's default
+        # quality of 75 — so asking for a smaller picture quietly cost you a
+        # worse one as well. Same policy the converter uses.
+        img.save(out_path, **_save_options(img, out_path.suffix.lstrip("."), input_path))
 
     console.print(f"[bold green]✓ Resized! {original_w}x{original_h} → {new_size[0]}x{new_size[1]}[/bold green]")
     console.print(f"Saved to: [bold underline]{out_path.name}[/bold underline]")

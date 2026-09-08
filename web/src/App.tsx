@@ -33,7 +33,8 @@ import {
   convertImageLocally,
   convertVideoLocally,
   fitImageLocally,
-  parseSize
+  parseSize,
+  type Dimensions
 } from "./local";
 // Inlined so the code themes itself (currentColor) and costs no extra request.
 import appQr from "./qr-app.svg?raw";
@@ -219,6 +220,12 @@ export function App() {
   const [linkQuality, setLinkQuality] = useState<"best" | "compatible">("best");
   /* An upload limit to land under, as typed ("500KB"). Empty = no limit. */
   const [maxSize, setMaxSize] = useState("");
+  /* Output dimensions in pixels, as typed. Either alone keeps the aspect. */
+  const [outWidth, setOutWidth] = useState("");
+  const [outHeight, setOutHeight] = useState("");
+  /* The picture's own size, read from the file — presets and the "now" label
+     both need it, and guessing would put the wrong numbers on screen. */
+  const [natural, setNatural] = useState<{ width: number; height: number } | null>(null);
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [statusLabel, setStatusLabel] = useState("");
@@ -264,6 +271,21 @@ export function App() {
     () => (kind === "image" && maxSize.trim() ? parseSize(maxSize) : null),
     [kind, maxSize]
   );
+  const pixels = (raw: string): number | null => {
+    const n = Number(raw.trim());
+    return raw.trim() && Number.isFinite(n) && n >= 1 && n <= 20000
+      ? Math.round(n)
+      : null;
+  };
+  const dims: Dimensions | undefined = useMemo(() => {
+    if (kind !== "image") return undefined;
+    const w = pixels(outWidth);
+    const h = pixels(outHeight);
+    return w || h ? { width: w, height: h } : undefined;
+  }, [kind, outWidth, outHeight]);
+  const badDimension =
+    (outWidth.trim() !== "" && pixels(outWidth) === null) ||
+    (outHeight.trim() !== "" && pixels(outHeight) === null);
   // Converting a file to the format it already is does nothing useful.
   const sourceExt = entries.length ? entries[0].ext.replace(/^jpeg$/, "jpg") : "";
   /* .srt/.txt mean "transcribe this" only when the input is media; from a
@@ -336,10 +358,36 @@ export function App() {
     if (!maxBytes && target === "auto") setTarget(TARGETS.image.main[0]);
   }, [maxBytes, kind, target]);
 
-  /* A budget only means anything for images. */
+  /* Read the picture's own dimensions so the control can show them and offer
+     presets that actually make it smaller. */
   useEffect(() => {
-    if (kind && kind !== "image" && maxSize) setMaxSize("");
-  }, [kind, maxSize]);
+    if (kind !== "image" || !entries.length) {
+      setNatural(null);
+      return;
+    }
+    let alive = true;
+    createImageBitmap(entries[0].file)
+      .then((bmp) => {
+        if (alive) setNatural({ width: bmp.width, height: bmp.height });
+        bmp.close();
+      })
+      .catch(() => {
+        /* HEIC and friends: the browser can't decode it, so no presets. */
+        if (alive) setNatural(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [kind, entries]);
+
+  /* Dimensions and a budget only mean anything for images. */
+  useEffect(() => {
+    if (kind && kind !== "image") {
+      if (maxSize) setMaxSize("");
+      if (outWidth) setOutWidth("");
+      if (outHeight) setOutHeight("");
+    }
+  }, [kind, maxSize, outWidth, outHeight]);
 
   /* Release result blobs when they're replaced. */
   useEffect(
@@ -580,6 +628,8 @@ export function App() {
     body.append("targetFormat", target);
     body.append("deliver", "job");
     if (maxBytes) body.append("maxSize", String(maxBytes));
+    if (dims?.width) body.append("width", String(dims.width));
+    if (dims?.height) body.append("height", String(dims.height));
     const started = await api("/api/convert/file", { method: "POST", body, signal });
     if (!started.ok) throw new Error(`${file.name}: ${await failDetail(started)}`);
     const { job } = await started.json();
@@ -617,7 +667,7 @@ export function App() {
     if (maxBytes) {
       if (canFitLocally(from, target)) {
         try {
-          const done = await fitImageLocally(file, target, maxBytes);
+          const done = await fitImageLocally(file, target, maxBytes, dims);
           setLocalCount((n) => n + 1);
           return { name: done.name, url: URL.createObjectURL(done.blob) };
         } catch {
@@ -627,7 +677,7 @@ export function App() {
       if (label) return convertOnServer(file, signal, label);
     } else if (canConvertLocally(from, target)) {
       try {
-        const done = await convertImageLocally(file, target);
+        const done = await convertImageLocally(file, target, dims);
         setLocalCount((n) => n + 1);
         return { name: done.name, url: URL.createObjectURL(done.blob) };
       } catch {
@@ -655,6 +705,8 @@ export function App() {
     body.append("file", file);
     body.append("targetFormat", target);
     if (maxBytes) body.append("maxSize", String(maxBytes));
+    if (dims?.width) body.append("width", String(dims.width));
+    if (dims?.height) body.append("height", String(dims.height));
     const res = await api("/api/convert/file", { method: "POST", body, signal });
     if (!res.ok) throw new Error(`${file.name}: ${await failDetail(res)}`);
     const blob = await res.blob();
@@ -750,6 +802,7 @@ export function App() {
 
   const canConvert =
     phase !== "working" &&
+    !badDimension &&
     (mode === "url"
       ? mediaUrl.trim().length > 0
       : entries.length > 0 && kind !== "other" && !!target);
@@ -805,6 +858,100 @@ export function App() {
   /* ── Render ──────────────────────────────────────────────────────────── */
 
   const SIZE_PRESETS = ["500KB", "1MB", "2MB"];
+  /* Longest-edge presets. Only ones that actually shrink the picture are
+     offered — "1920" on a 900px photo would upscale it, which nobody wants
+     from a control labelled Dimensions. */
+  const EDGE_PRESETS = [1920, 1280, 800];
+
+  /* Scale the longest edge to `edge`, leaving the other side blank so the
+     engine keeps the aspect ratio rather than us rounding it here. */
+  const setLongestEdge = (edge: number) => {
+    if (!natural) return;
+    if (natural.width >= natural.height) {
+      setOutWidth(String(edge));
+      setOutHeight("");
+    } else {
+      setOutHeight(String(edge));
+      setOutWidth("");
+    }
+  };
+
+  const activeEdge = (edge: number) =>
+    natural
+      ? natural.width >= natural.height
+        ? outWidth === String(edge) && !outHeight
+        : outHeight === String(edge) && !outWidth
+      : false;
+
+  const dimensionControls = () => {
+    if (mode !== "file" || kind !== "image") return null;
+    const longest = natural ? Math.max(natural.width, natural.height) : 0;
+    return (
+      <div className="opt">
+        <span className="opt-label">
+          Dimensions
+          {natural && (
+            <span className="opt-note">
+              {" "}
+              now {natural.width} × {natural.height}
+            </span>
+          )}
+        </span>
+        <div className="chips">
+          <button
+            className={`chip ${!outWidth && !outHeight ? "active" : ""}`}
+            onClick={() => {
+              setOutWidth("");
+              setOutHeight("");
+            }}
+          >
+            original
+          </button>
+          {EDGE_PRESETS.filter((edge) => edge < longest).map((edge) => (
+            <button
+              key={edge}
+              className={`chip ${activeEdge(edge) ? "active" : ""}`}
+              onClick={() => setLongestEdge(edge)}
+              title={`Longest side ${edge} px, aspect ratio kept`}
+            >
+              {edge} px
+            </button>
+          ))}
+          <input
+            className="size-input dim-input"
+            type="text"
+            inputMode="numeric"
+            placeholder="width"
+            value={outWidth}
+            onChange={(e) => setOutWidth(e.target.value)}
+            aria-label="Output width in pixels"
+          />
+          <span className="chip-divider">×</span>
+          <input
+            className="size-input dim-input"
+            type="text"
+            inputMode="numeric"
+            placeholder="height"
+            value={outHeight}
+            onChange={(e) => setOutHeight(e.target.value)}
+            aria-label="Output height in pixels"
+          />
+        </div>
+        {badDimension ? (
+          <span className="chip-divider">
+            width and height are whole pixels, 1 to 20000
+          </span>
+        ) : (
+          (outWidth || outHeight) &&
+          !(outWidth && outHeight) && (
+            <span className="chip-divider">
+              the other side follows, so the picture keeps its shape
+            </span>
+          )
+        )}
+      </div>
+    );
+  };
 
   /* Images are the one kind where people arrive with a number in mind — an
      upload limit — rather than a format. */
@@ -1141,6 +1288,7 @@ export function App() {
                       </div>
                     ) : (
                       <>
+                        {dimensionControls()}
                         {sizeControls()}
                         {targetChips()}
                       </>

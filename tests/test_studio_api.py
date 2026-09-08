@@ -481,6 +481,103 @@ def test_audio_downloads_ask_for_the_best_encode(open_studio):
     assert args[args.index("--audio-quality") + 1] == "0"
 
 
+def test_dimensions_are_honoured_and_keep_the_aspect(open_studio):
+    """The control people reach for first: make it smaller in pixels. Giving
+    one side has to scale the other, or every caller does that arithmetic."""
+    PIL = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    import io
+
+    with TestClient(open_studio.app) as client:
+        started = client.post(
+            "/api/convert/file",
+            files={"file": ("scan.png", scan_png_bytes(900, 1200), "image/png")},
+            data={"targetFormat": "jpg", "width": "300", "deliver": "link"},
+        )
+        assert started.status_code == 200, started.text
+        got = client.get(started.json()["download"])
+
+    assert PIL.open(io.BytesIO(got.content)).size == (300, 400)
+
+
+def test_both_dimensions_given_are_taken_literally(open_studio):
+    PIL = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    import io
+
+    with TestClient(open_studio.app) as client:
+        started = client.post(
+            "/api/convert/file",
+            files={"file": ("scan.png", scan_png_bytes(900, 1200), "image/png")},
+            data={"targetFormat": "jpg", "width": "320", "height": "200",
+                  "deliver": "link"},
+        )
+        got = client.get(started.json()["download"])
+
+    assert PIL.open(io.BytesIO(got.content)).size == (320, 200)
+
+
+def test_resizing_and_a_budget_compose(open_studio):
+    """Both at once is the real request — "1000 px and under 40 KB". Resizing
+    has to happen first, or the budget is spent on pixels being thrown away."""
+    PIL = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    import io
+
+    with TestClient(open_studio.app) as client:
+        started = client.post(
+            "/api/convert/file",
+            files={"file": ("scan.png", scan_png_bytes(900, 1200), "image/png")},
+            data={"targetFormat": "auto", "width": "500", "maxSize": "40KB",
+                  "deliver": "link"},
+        )
+        assert started.status_code == 200, started.text
+        got = client.get(started.json()["download"])
+
+    assert len(got.content) <= 40 * 1024
+    assert PIL.open(io.BytesIO(got.content)).width == 500
+
+
+def test_resizing_alone_keeps_the_format_it_arrived_in(open_studio):
+    """"auto" is the engine choosing a format to meet a budget. With only a
+    resize there is no budget to choose against, so nothing should change."""
+    PIL = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    import io
+
+    with TestClient(open_studio.app) as client:
+        started = client.post(
+            "/api/convert/file",
+            files={"file": ("scan.png", scan_png_bytes(600, 400), "image/png")},
+            data={"targetFormat": "auto", "width": "200", "deliver": "link"},
+        )
+        assert started.status_code == 200, started.text
+        assert started.json()["filename"].endswith(".png")
+        got = client.get(started.json()["download"])
+
+    assert PIL.open(io.BytesIO(got.content)).format == "PNG"
+
+
+@pytest.mark.parametrize("bad", ["0", "-40", "99999", "abc", "1.5.2"])
+def test_a_dimension_that_is_not_a_dimension_is_refused(open_studio, bad):
+    """Silently ignoring it would hand back a picture that is not the size the
+    caller asked for, which is worse than saying no."""
+    with TestClient(open_studio.app) as client:
+        res = client.post(
+            "/api/convert/file",
+            files={"file": ("scan.png", scan_png_bytes(300, 300), "image/png")},
+            data={"targetFormat": "jpg", "width": bad},
+        )
+    assert res.status_code == 422
+
+
+def test_dimensions_on_something_that_is_not_an_image_are_refused(
+        open_studio, fixtures):
+    with TestClient(open_studio.app) as client:
+        res = client.post(
+            "/api/convert/file",
+            files={"file": ("clip.wav", wav_bytes(fixtures), "audio/wav")},
+            data={"targetFormat": "mp3", "width": "640"},
+        )
+    assert res.status_code == 422
+
+
 # ── image fidelity ──────────────────────────────────────────────────────────
 
 def test_exif_rotation_is_applied(tmp_path):
@@ -512,6 +609,36 @@ def test_jpeg_is_saved_at_quality_not_pillow_default(tmp_path):
     opts = _save_options(img, "jpg", tmp_path / "x.png")
     assert opts["quality"] >= 90
     assert opts["subsampling"] == 0, "chroma subsampling blurs coloured detail"
+
+
+def test_a_resize_keeps_the_quality_policy(tmp_path):
+    """A bare Pillow save() re-encodes JPEG at quality 75. Asking for a smaller
+    picture should not quietly hand back a worse one as well."""
+    PIL = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    import random
+
+    from transcripe.core import selftest
+    from transcripe.engines.images import resize_image
+
+    random.seed(5)
+    img = PIL.new("RGB", (900, 600))
+    px = img.load()
+    for y in range(600):
+        for x in range(900):
+            n = random.randint(0, 40)
+            px[x, y] = ((x * 255) // 900 + n, (y * 255) // 600 + n, 120 + n)
+    src = tmp_path / "photo.jpg"
+    img.save(src, quality=98, subsampling=0)
+
+    out = tmp_path / "small.jpg"
+    resize_image(src, 600, None, selftest.NULL, output_path=out)
+
+    assert PIL.open(out).size == (600, 400)
+    # Pillow's default would land far below this for the same pixels.
+    naive = tmp_path / "naive.jpg"
+    PIL.open(src).resize((600, 400), PIL.LANCZOS).save(naive)
+    assert out.stat().st_size > naive.stat().st_size * 1.3, (
+        "resize appears to have fallen back to Pillow's default quality")
 
 
 def test_lossless_source_stays_lossless_into_webp(tmp_path):

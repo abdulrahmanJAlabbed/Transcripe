@@ -1010,6 +1010,10 @@ async def convert_file(
     # An upload limit to land under ("500KB", "2MB"). Images only — it is the
     # one job where the size, not the format, is what the user came for.
     maxSize: str = Form(""),
+    # Pixel dimensions. Either one on its own scales the other to match, so a
+    # caller who knows only "1280 wide" doesn't have to do the arithmetic.
+    width: str = Form(""),
+    height: str = Form(""),
 ):
     require_token(request)
     target_fmt = re.sub(r"[^\w]", "", targetFormat.lower()) or "txt"
@@ -1029,6 +1033,31 @@ async def convert_file(
             shutil.rmtree(temp_dir, ignore_errors=True)
             raise HTTPException(status_code=422,
                                 detail="A size budget under 1 KB can't hold an image.")
+
+    # 20000 is past any real display or print need, and well short of the
+    # number that turns a resize into an out-of-memory kill.
+    def _dimension(raw: str, name: str) -> int | None:
+        if not raw.strip():
+            return None
+        try:
+            value = int(float(raw))
+        except ValueError:
+            value = 0
+        if not 1 <= value <= 20000:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=422,
+                detail=f"{name} must be a whole number of pixels between 1 and 20000.")
+        return value
+
+    out_width = _dimension(width, "Width")
+    out_height = _dimension(height, "Height")
+
+    # "auto" hands the format choice to the engine, which is a real decision
+    # only when there is a size budget to make it against. Asked to resize and
+    # nothing else, the answer is simply the format it arrived in.
+    if target_fmt == "auto" and not fit_bytes and (out_width or out_height):
+        target_fmt = os.path.splitext(safe_in)[1].lower().lstrip(".") or "png"
 
     base_name = os.path.splitext(safe_in)[0] or "output"
     output_filename = f"{base_name}_converted.{target_fmt}"
@@ -1098,7 +1127,7 @@ async def convert_file(
         or src_ext in IMAGE_FMTS | {"heic", "heif", "avif"})
     # "auto" means "you choose the format, just hit the size" — meaningless
     # without a budget to hit, so it is only accepted alongside one.
-    if target_fmt == "auto" and not fit_bytes:
+    if target_fmt == "auto" and not fit_bytes and not (out_width or out_height):
         shutil.rmtree(temp_dir, ignore_errors=True)
         raise HTTPException(status_code=422,
                             detail="Pick a format, or give a maximum size to fit.")
@@ -1110,6 +1139,10 @@ async def convert_file(
         shutil.rmtree(temp_dir, ignore_errors=True)
         raise HTTPException(status_code=422,
                             detail="A maximum size can only be applied to images.")
+    if (out_width or out_height) and not is_image_work:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise HTTPException(status_code=422,
+                            detail="Width and height can only be applied to images.")
 
     def encode(on_progress=None):
         # fit_size settles its own extension, so this closure may rename the
@@ -1141,19 +1174,29 @@ async def convert_file(
 
             from rich.console import Console
 
-            from transcripe.engines.images import convert_image, fit_size
+            from transcripe.engines.images import convert_image, fit_size, resize_image
 
             quiet = Console(file=io.StringIO())
+            source = Path(input_path)
+
+            if out_width or out_height:
+                # Resize first: a budget spent on pixels you are about to throw
+                # away is wasted. The hand-off is PNG so the intermediate step
+                # costs nothing — whatever comes next re-encodes exactly once.
+                staged = Path(temp_dir) / "resized.png"
+                resize_image(source, out_width, out_height, quiet, output_path=staged)
+                source = staged
+
             if fit_bytes:
                 # auto may re-encode a lossless photo as JPEG, so take the
                 # name fit_size actually wrote rather than assuming one.
                 written = fit_size(
-                    Path(input_path), quiet, output_path=Path(output_path),
+                    source, quiet, output_path=Path(output_path),
                     max_bytes=fit_bytes, target_format=target_fmt)
                 output_path = str(written)
                 output_filename = written.name
             else:
-                convert_image(Path(input_path), target_fmt, quiet,
+                convert_image(source, target_fmt, quiet,
                               output_path=Path(output_path))
             return None
         if on_progress:

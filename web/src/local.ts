@@ -21,6 +21,22 @@ const IMAGE_IN = ["png", "jpg", "jpeg", "webp", "gif", "bmp"];
 
 export type LocalResult = { blob: Blob; name: string };
 
+/** Pixel dimensions asked for. Either one alone scales the other to match, so
+ *  a caller who knows only "1280 wide" doesn't have to do the arithmetic. */
+export type Dimensions = { width?: number | null; height?: number | null };
+
+function sizedTo(
+  natural: { width: number; height: number },
+  dims?: Dimensions
+): [number, number] {
+  const w = dims?.width ?? null;
+  const h = dims?.height ?? null;
+  if (w && h) return [w, h];
+  if (w) return [w, Math.max(1, Math.round(natural.height * (w / natural.width)))];
+  if (h) return [Math.max(1, Math.round(natural.width * (h / natural.height))), h];
+  return [natural.width, natural.height];
+}
+
 /* ── Video, in the page ───────────────────────────────────────────────────
    Mediabunny drives WebCodecs, which is hardware-backed: measured here at
    ~350 fps for 720p H.264. It copies streams when the container can hold
@@ -109,7 +125,8 @@ function encodeQuality(sourceExt: string, target: string): number {
  *  read the file, which is the caller's cue to fall back to the engine. */
 export async function convertImageLocally(
   file: File,
-  target: string
+  target: string,
+  dims?: Dimensions
 ): Promise<LocalResult> {
   const type = IMAGE_OUT[target];
   if (!type) throw new Error(`no local encoder for .${target}`);
@@ -118,7 +135,8 @@ export async function convertImageLocally(
   // photo comes out upright — same as the engine does with exif_transpose.
   const bitmap = await createImageBitmap(file);
   try {
-    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const [outW, outH] = sizedTo(bitmap, dims);
+    const canvas = new OffscreenCanvas(outW, outH);
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("no 2d context");
 
@@ -127,7 +145,7 @@ export async function convertImageLocally(
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
-    ctx.drawImage(bitmap, 0, 0);
+    ctx.drawImage(bitmap, 0, 0, outW, outH);
 
     const quality = encodeQuality(extensionOf(file.name), target);
     const blob = await canvas.convertToBlob({ type, quality });
@@ -233,10 +251,13 @@ async function bestUnder(
 export async function fitImageLocally(
   file: File,
   target: string,
-  maxBytes: number
+  maxBytes: number,
+  dims?: Dimensions
 ): Promise<LocalResult> {
   const bitmap = await createImageBitmap(file);
   try {
+    // Resize first: budget spent on pixels about to be thrown away is wasted.
+    const [baseW, baseH] = sizedTo(bitmap, dims);
     const alpha = hasAlpha(bitmap);
     let ext = target;
     if (target === "auto") {
@@ -246,7 +267,7 @@ export async function fitImageLocally(
         // Keep the format when it already fits. When it doesn't, a format
         // with no quality dial can only meet the budget by dropping pixels —
         // so move to one that can, and keep the picture whole.
-        const asIs = await draw(bitmap, bitmap.width, bitmap.height, false)
+        const asIs = await draw(bitmap, baseW, baseH, false)
           .convertToBlob({ type: "image/png" });
         ext = asIs.size <= maxBytes ? "png" : alpha ? "webp" : "jpg";
       }
@@ -257,19 +278,19 @@ export async function fitImageLocally(
     const name = `${file.name.replace(/\.[^.]+$/, "")}.${ext}`;
 
     if (type !== "image/png") {
-      const full = draw(bitmap, bitmap.width, bitmap.height, opaque);
+      const full = draw(bitmap, baseW, baseH, opaque);
       const best = await bestUnder(full, type, maxBytes);
       if (best && best.quality >= QUALITY_FLOOR) return { blob: best.blob, name };
     }
 
     // Out of quality: remove pixels, solving for the scale rather than
     // stepping blindly toward it.
-    const probe = await draw(bitmap, bitmap.width, bitmap.height, opaque)
+    const probe = await draw(bitmap, baseW, baseH, opaque)
       .convertToBlob({ type, quality: QUALITY_CEILING });
     let scale = Math.min(1, Math.sqrt(maxBytes / probe.size) * 0.95);
     for (let attempt = 0; attempt < 8; attempt++) {
-      const w = Math.max(1, Math.round(bitmap.width * scale));
-      const h = Math.max(1, Math.round(bitmap.height * scale));
+      const w = Math.max(1, Math.round(baseW * scale));
+      const h = Math.max(1, Math.round(baseH * scale));
       const canvas = draw(bitmap, w, h, opaque);
       if (type === "image/png") {
         const blob = await canvas.convertToBlob({ type });
