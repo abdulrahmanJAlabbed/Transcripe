@@ -144,8 +144,11 @@ function Studio() {
      a number of kilobytes rather than a different format. */
   const maxBytes =
     kind === "image" && maxSize.trim() ? parseSize(maxSize) : null;
-  const edge =
-    kind === "image" && longestEdge.trim() ? Number(longestEdge) : null;
+  const edge = (() => {
+    if (kind !== "image" || !longestEdge.trim()) return null;
+    const n = Number(longestEdge.trim());
+    return Number.isFinite(n) && n >= 1 && n <= 20000 ? Math.round(n) : null;
+  })();
   /* "auto" is how the engine is asked to choose, not a file extension. */
   const label = target === "auto" ? "the best fit" : `.${target}`;
   /* What the folded refinements add up to, so hiding them never hides a
@@ -473,8 +476,16 @@ function Studio() {
     reset();
   };
 
+  /* A number typed but not understood should stop the run, not be silently
+     ignored — quietly converting without it is the wrong answer. */
+  const badRefinement =
+    (!!maxSize.trim() && maxBytes === null) ||
+    (!!longestEdge.trim() && edge === null);
+
   const canRun =
     phase !== "working" &&
+    !badRefinement &&
+    !overLimit &&
     (mode === "url"
       ? url.trim().length > 0
       : !!picked && kind !== "other" && !!target);
@@ -761,7 +772,21 @@ function Studio() {
                         onPress={() => setMaxSize(preset)}
                       />
                     ))}
+                    <TextInput
+                      style={st.tinyInput}
+                      value={SIZE_PRESETS.includes(maxSize) ? "" : maxSize}
+                      onChangeText={setMaxSize}
+                      placeholder="or 800KB"
+                      placeholderTextColor={c.ink3}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
                   </View>
+                  {!!maxSize.trim() && maxBytes === null && (
+                    <Body style={{ fontSize: 12, color: c.ink3 }}>
+                      That isn&apos;t a size — try 500KB, 1.5MB, 900k.
+                    </Body>
+                  )}
                   {maxBytes !== null && (
                     <Body style={{ fontSize: 12, color: c.ink3 }}>
                       Quality goes before pixels — the picture keeps its size
@@ -796,7 +821,20 @@ function Studio() {
                         onPress={() => setLongestEdge(px)}
                       />
                     ))}
+                    <TextInput
+                      style={st.tinyInput}
+                      value={EDGE_PRESETS.includes(longestEdge) ? "" : longestEdge}
+                      onChangeText={setLongestEdge}
+                      placeholder="or 640"
+                      placeholderTextColor={c.ink3}
+                      keyboardType="number-pad"
+                    />
                   </View>
+                  {!!longestEdge.trim() && edge === null && (
+                    <Body style={{ fontSize: 12, color: c.ink3 }}>
+                      Width is a whole number of pixels, 1 to 20000.
+                    </Body>
+                  )}
                   {edge !== null && (
                     <Body style={{ fontSize: 12, color: c.ink3 }}>
                       The other side follows, so the picture keeps its shape.
@@ -1067,6 +1105,18 @@ const makeStyles = (c: Palette, isDark: boolean) => {
 
   chips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
 
+  tinyInput: {
+    minWidth: 92,
+    paddingVertical: 7,
+    paddingHorizontal: 13,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: c.lineStrong,
+    backgroundColor: c.card,
+    fontFamily: f.mono,
+    fontSize: 12.5,
+    color: c.ink
+  },
   moreToggle: {
     flexDirection: "row",
     alignItems: "center",
