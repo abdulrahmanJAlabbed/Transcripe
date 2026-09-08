@@ -41,7 +41,7 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Transcripe reads the videos and photos you pick so your local engine can convert them."
+          "photosPermission": "Transcripe reads the photos and videos you pick so it can convert them."
         }
       ],
       [
