@@ -56,8 +56,11 @@ deploy_engine() {
     # would otherwise decide it already has this one.
     '$API_DIR/venv/bin/pip' install -q --force-reinstall --no-deps '/tmp/$(basename "$WHEEL")'
     # cairosvg reads SVG, which Pillow cannot; without it every .svg input
-    # fails on the server while working fine locally.
-    '$API_DIR/venv/bin/pip' install -q 'fastapi>=0.115' uvicorn python-multipart yt-dlp Pillow pillow-heif cairosvg
+    # fails on the server while working fine locally. faster-whisper is the
+    # transcription model runner — the VM pins TRANSCRIPE_MODEL=base in its
+    # systemd unit, since the package default of large-v3 wants 4 GB it
+    # hasn't got.
+    '$API_DIR/venv/bin/pip' install -q 'fastapi>=0.115' uvicorn python-multipart yt-dlp Pillow pillow-heif cairosvg faster-whisper
     rm -f '/tmp/$(basename "$WHEEL")'
     sudo systemctl restart transcripe-api
     sleep 4

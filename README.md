@@ -267,6 +267,8 @@ From a git checkout, `python server.py` does the same thing. Without a built
 UI the API still runs — the studio says so instead of failing.
 
 There's a public demo at **[alabed.site/transcripe](https://alabed.site/transcripe/)**.
+It transcribes with the `base` Whisper model — pinned in the VM's systemd unit,
+since the package default of `large-v3` wants more memory than that box has.
 It converts on that server rather than on your machine, and says so — the
 private path is the local install above. Deploy it with:
 
