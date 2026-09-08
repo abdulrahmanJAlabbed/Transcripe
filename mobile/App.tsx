@@ -48,6 +48,8 @@ import {
   firstUrl,
   formatBytes,
   kindOf,
+  parseSize,
+  SIZE_PRESETS,
   TARGETS,
   TEXT_TARGETS,
   URL_TARGETS,
@@ -96,6 +98,8 @@ function Studio() {
   const [target, setTarget] = useState("mp4");
   const [useCookies, setUseCookies] = useState(true);
   const [linkQuality, setLinkQuality] = useState<"best" | "compatible">("best");
+  /* Images only: an upload limit to land under, as typed ("500KB"). */
+  const [maxSize, setMaxSize] = useState("");
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [status, setStatus] = useState("");
@@ -123,6 +127,21 @@ function Studio() {
 
   const kind: Kind | null = picked ? kindOf(picked.ext) : null;
   const platform = detectPlatform(url);
+  /* Only images have a size budget: it is the one job where what you want is
+     a number of kilobytes rather than a different format. */
+  const maxBytes =
+    kind === "image" && maxSize.trim() ? parseSize(maxSize) : null;
+
+  /* Arming a budget changes the question from "which format" to "how small",
+     so let the engine choose until the user takes the choice back. */
+  useEffect(() => {
+    if (kind !== "image") {
+      if (maxSize) setMaxSize("");
+      return;
+    }
+    if (maxBytes && target !== "auto") setTarget("auto");
+    if (!maxBytes && target === "auto") setTarget(TARGETS.image.main[0]);
+  }, [kind, maxBytes, target, maxSize]);
 
   const onLayoutRoot = useCallback(() => {
     if (fontsLoaded) SplashScreen.hideAsync().catch(() => {});
@@ -313,7 +332,8 @@ function Studio() {
             uri: picked!.uri,
             name: picked!.name,
             mimeType: picked!.mimeType,
-            format: target
+            format: target,
+            maxSize: maxBytes ?? undefined
           },
           (fraction) => {
             const pct = Math.round(fraction * 100);
@@ -383,7 +403,9 @@ function Studio() {
           ? []
           : [...TARGETS[kind].main, ...(TARGETS[kind].audio ?? [])]
         ).filter(
-          (t) => t !== picked?.ext.replace(/^jpeg$/, "jpg")
+          // Converting a file to what it already is does nothing — unless the
+          // point is the size, in which case it does.
+          (t) => maxBytes !== null || t !== picked?.ext.replace(/^jpeg$/, "jpg")
         )
       : [];
   const textTargets =
@@ -575,11 +597,47 @@ function Studio() {
               </View>
             )}
 
+            {/* A size budget — images are the one kind where people arrive
+                with a number in mind rather than a format. */}
+            {mode === "file" && kind === "image" && (
+              <View style={{ gap: 9 }}>
+                <Label>maximum size</Label>
+                <View style={st.chips}>
+                  <Chip
+                    label="no limit"
+                    active={!maxSize}
+                    onPress={() => setMaxSize("")}
+                  />
+                  {SIZE_PRESETS.map((preset) => (
+                    <Chip
+                      key={preset}
+                      label={preset.replace(/(KB|MB)/, " $1")}
+                      active={maxSize === preset}
+                      onPress={() => setMaxSize(preset)}
+                    />
+                  ))}
+                </View>
+                {maxBytes !== null && (
+                  <Body style={{ fontSize: 12, color: c.ink3 }}>
+                    Quality goes before pixels — the picture keeps its size on
+                    screen unless the budget leaves no other way.
+                  </Body>
+                )}
+              </View>
+            )}
+
             {/* Targets */}
             {targets.length > 0 && (mode === "url" ? !!url.trim() : !!picked) && (
               <View style={{ gap: 9 }}>
                 <Label>{mode === "url" ? "save as" : "convert to"}</Label>
                 <View style={st.chips}>
+                  {maxBytes !== null && (
+                    <Chip
+                      label="best fit"
+                      active={target === "auto"}
+                      onPress={() => setTarget("auto")}
+                    />
+                  )}
                   {targets.map((t) => (
                     <Chip
                       key={t}

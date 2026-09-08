@@ -387,19 +387,28 @@ def image_compress_cmd(
 def image_fit_size_cmd(
     file: str = typer.Argument(...),
     min: str = typer.Option(None, "--min", help="Minimum file size, e.g. 9.77KB, 500k (upscales)"),
-    max: str = typer.Option(None, "--max", help="Maximum file size, e.g. 2MB (shrinks)"),
+    max: str = typer.Option(None, "--max", help="Maximum file size, e.g. 500KB, 2MB (shrinks)"),
+    format: str = typer.Option("auto", "--format", "-f",
+                               help="Output format: auto (keeps the picture intact), "
+                                    "same (keep the source format), or jpg/webp/png/avif"),
     output: str = typer.Option(None, "--output", "-o"),
 ):
     """Re-encode an image so its file size meets a platform rule (min and/or max).
 
-    Example — fix Google's "min 9.77 KB":  transcripe image fit-size logo.png --min 9.77KB
+    Example — fit an upload limit:      transcripe image fit-size photo.png --max 500KB
+    Example — Google's "min 9.77 KB":   transcripe image fit-size logo.png --min 9.77KB
+
+    Quality goes in the order that costs least: colour detail first, then
+    compression, and only then the resolution. With --format auto a photo in a
+    lossless format is re-encoded rather than shrunk.
     """
     from transcripe.engines import images
     try:
         mn = images.parse_size(min) if min else None
         mx = images.parse_size(max) if max else None
         images.fit_size(_existing(file), console, output_path=_out(output),
-                        min_bytes=mn, max_bytes=mx)
+                        min_bytes=mn, max_bytes=mx,
+                        target_format=None if format == "same" else format)
     except Exception as e:
         _fail(e)
 

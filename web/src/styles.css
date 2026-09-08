@@ -663,6 +663,25 @@ a {
   color: var(--paper);
 }
 
+.size-input {
+  flex: none;
+  width: 104px;
+  padding: 7px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--card);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--ink);
+  outline: none;
+  transition: border-color 0.18s ease;
+}
+.size-input::placeholder {
+  color: var(--ink-3);
+}
+.size-input:focus {
+  border-color: var(--accent, var(--ink-2));
+}
 .chip-divider {
   align-self: center;
   font-family: var(--font-mono);

@@ -188,7 +188,6 @@ def _compute_default_output(input_path: Path, target_format: str, params: dict |
         "__fix_encoding": parent / f"{stem}_utf8{input_path.suffix}",
         "__resize": parent / f"{stem}_resized{input_path.suffix}",
         "__compress_img": parent / f"{stem}_compressed{input_path.suffix}",
-        "__fit_size": parent / f"{stem}_fitted{input_path.suffix}",
         "__img_pdf": input_path.with_suffix(".pdf"),
         "__json_pretty": parent / f"{stem}_pretty.json",
         "__json_minify": parent / f"{stem}_min.json",
@@ -201,6 +200,12 @@ def _compute_default_output(input_path: Path, target_format: str, params: dict |
     }
     if target_format in file_map:
         return file_map[target_format], False
+
+    if target_format == "__fit_size":
+        # "auto" may settle on a different format than the input's, and the
+        # name it lands on is the one to confirm and to guard against.
+        ext = params.get("fit_ext") or input_path.suffix.lstrip(".")
+        return parent / f"{stem}_fitted.{ext}", False
 
     if target_format == "__pdf_split":
         rng = params.get("page_range", "pages")
@@ -599,10 +604,14 @@ def _process_single_file(input_path: Path, target_format: str | None, console: C
             params["quality"] = int(_ask(questionary.text("Quality (1-100, lower = smaller):", default="60", style=THEME)))
         elif target_format == "__fit_size":
             mn = _ask(questionary.text("Minimum file size (e.g. 9.77KB — blank for none):", default="", style=THEME))
-            mx = _ask(questionary.text("Maximum file size (e.g. 2MB — blank for none):", default="", style=THEME))
+            mx = _ask(questionary.text("Maximum file size (e.g. 500KB — blank for none):", default="", style=THEME))
             from transcripe.engines import images as _img
             params["min_bytes"] = _img.parse_size(mn) if mn.strip() else None
             params["max_bytes"] = _img.parse_size(mx) if mx.strip() else None
+            # "auto" so a photo saved as PNG is re-encoded rather than shrunk;
+            # the format changes only when keeping it would cost real detail.
+            params["fit_ext"] = _img.planned_extension(
+                input_path, params["max_bytes"], "auto")
         elif target_format == "__burn_subs":
             raw = _ask(questionary.path("Subtitle file (.srt/.vtt/.ass) to burn in:", style=THEME))
             subs = Path(str(raw).strip().strip("'\"")).expanduser().resolve()
@@ -689,7 +698,8 @@ def _process_single_file(input_path: Path, target_format: str | None, console: C
             images.compress_image(input_path, params["quality"], console, output_path=out)
         elif target_format == "__fit_size":
             images.fit_size(input_path, console, output_path=out,
-                            min_bytes=params.get("min_bytes"), max_bytes=params.get("max_bytes"))
+                            min_bytes=params.get("min_bytes"),
+                            max_bytes=params.get("max_bytes"), target_format="auto")
         elif target_format == "__img_pdf":
             images.image_to_pdf(input_path, console, output_path=out)
         elif target_format == "__json_pretty":

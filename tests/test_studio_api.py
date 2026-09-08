@@ -535,6 +535,107 @@ def test_colour_profile_survives_conversion(tmp_path):
     assert _save_options(img, "jpg", None)["icc_profile"] == b"fake-profile"
 
 
+# ── fitting an upload limit ─────────────────────────────────────────────────
+
+def scan_png_bytes(width=900, height=1300) -> bytes:
+    """A photograph-like PNG, comfortably over any budget we ask of it."""
+    import io
+    import random
+
+    PIL = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    random.seed(11)
+    img = PIL.new("RGB", (width, height))
+    px = img.load()
+    for y in range(height):
+        for x in range(width):
+            n = random.randint(0, 40)
+            px[x, y] = ((x * 255) // width + n, (y * 255) // height + n,
+                        128 + ((x + y) % 64) + n)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_a_size_budget_is_met_and_the_picture_survives(open_studio):
+    """The studio's half of the promise: ask for 500 KB and 500 KB is what
+    comes back — at the resolution it went in, because auto re-encodes a
+    lossless photo rather than shrinking it."""
+    PIL = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    import io
+
+    src = scan_png_bytes()
+    assert len(src) > 500 * 1024
+    with TestClient(open_studio.app) as client:
+        started = client.post(
+            "/api/convert/file",
+            files={"file": ("scan.png", src, "image/png")},
+            data={"targetFormat": "auto", "maxSize": "500KB", "deliver": "link"},
+        )
+        assert started.status_code == 200, started.text
+        body = started.json()
+        assert body["filename"].endswith(".jpg")
+        got = client.get(body["download"])
+
+    assert len(got.content) <= 500 * 1024
+    assert PIL.open(io.BytesIO(got.content)).size == (900, 1300)
+
+
+def test_a_budget_honours_an_explicit_format(open_studio):
+    """auto is a default, not a policy — ask for WebP and the budget is met
+    in WebP."""
+    PIL = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    import io
+
+    with TestClient(open_studio.app) as client:
+        started = client.post(
+            "/api/convert/file",
+            files={"file": ("scan.png", scan_png_bytes(), "image/png")},
+            data={"targetFormat": "webp", "maxSize": "200KB", "deliver": "link"},
+        )
+        assert started.status_code == 200, started.text
+        got = client.get(started.json()["download"])
+
+    assert len(got.content) <= 200 * 1024
+    assert PIL.open(io.BytesIO(got.content)).format == "WEBP"
+
+
+def test_auto_without_a_budget_is_refused(open_studio):
+    """"auto" only means anything as "hit this size" — on its own it is not a
+    format, and guessing one would be inventing an answer."""
+    with TestClient(open_studio.app) as client:
+        res = client.post(
+            "/api/convert/file",
+            files={"file": ("scan.png", scan_png_bytes(300, 300), "image/png")},
+            data={"targetFormat": "auto"},
+        )
+    assert res.status_code == 422
+
+
+def test_a_budget_on_something_that_is_not_an_image_is_refused(open_studio, fixtures):
+    """Video has its own size controls; silently ignoring the number here
+    would hand back a file that misses the limit the user asked for."""
+    with TestClient(open_studio.app) as client:
+        res = client.post(
+            "/api/convert/file",
+            files={"file": ("clip.wav", wav_bytes(fixtures), "audio/wav")},
+            data={"targetFormat": "mp3", "maxSize": "500KB"},
+        )
+    assert res.status_code == 422
+    assert "image" in res.json()["detail"].lower()
+
+
+@pytest.mark.parametrize("bad", ["banana", "", "0KB", "-5MB", "12 gigabytes"])
+def test_a_size_that_is_not_a_size_is_refused_not_guessed(open_studio, bad):
+    with TestClient(open_studio.app) as client:
+        res = client.post(
+            "/api/convert/file",
+            files={"file": ("scan.png", scan_png_bytes(300, 300), "image/png")},
+            data={"targetFormat": "jpg", "maxSize": bad},
+        )
+    # An empty string means "no budget", which is a plain conversion.
+    assert res.status_code == (200 if bad == "" else 422)
+
+
 # ── remux vs re-encode ──────────────────────────────────────────────────────
 
 @pytest.fixture

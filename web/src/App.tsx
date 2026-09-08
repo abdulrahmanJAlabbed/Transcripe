@@ -29,8 +29,11 @@ import { api, setToken } from "./token";
 import {
   canConvertLocally,
   canConvertVideoLocally,
+  canFitLocally,
   convertImageLocally,
-  convertVideoLocally
+  convertVideoLocally,
+  fitImageLocally,
+  parseSize
 } from "./local";
 // Inlined so the code themes itself (currentColor) and costs no extra request.
 import appQr from "./qr-app.svg?raw";
@@ -214,6 +217,8 @@ export function App() {
   const [target, setTarget] = useState("");
   const [useCookies, setUseCookies] = useState(true);
   const [linkQuality, setLinkQuality] = useState<"best" | "compatible">("best");
+  /* An upload limit to land under, as typed ("500KB"). Empty = no limit. */
+  const [maxSize, setMaxSize] = useState("");
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [statusLabel, setStatusLabel] = useState("");
@@ -254,6 +259,12 @@ export function App() {
   const engineHandles = (k: Kind | null) =>
     k !== "data" || features.data !== false;
   const kind: Kind | null = entries.length ? kindOf(entries[0].ext) : null;
+  /* Only images have a size budget: it is the one job where what the user
+     wants is a number of kilobytes, not a different format. */
+  const maxBytes = useMemo(
+    () => (kind === "image" && maxSize.trim() ? parseSize(maxSize) : null),
+    [kind, maxSize]
+  );
   // Converting a file to the format it already is does nothing useful.
   const sourceExt = entries.length ? entries[0].ext.replace(/^jpeg$/, "jpg") : "";
   /* .srt/.txt mean "transcribe this" only when the input is media; from a
@@ -316,6 +327,20 @@ export function App() {
     if (canTranscribe || !TEXT_TARGETS.includes(target) || !kind || kind === "other") return;
     setTarget(TARGETS[kind].main[0]);
   }, [canTranscribe, target, kind]);
+
+  /* Arming a size budget changes the question from "which format" to "how
+     small", so hand the format choice to the engine until the user takes it
+     back — and give it back when the budget goes away. */
+  useEffect(() => {
+    if (kind !== "image") return;
+    if (maxBytes && target !== "auto") setTarget("auto");
+    if (!maxBytes && target === "auto") setTarget(TARGETS.image.main[0]);
+  }, [maxBytes, kind, target]);
+
+  /* A budget only means anything for images. */
+  useEffect(() => {
+    if (kind && kind !== "image" && maxSize) setMaxSize("");
+  }, [kind, maxSize]);
 
   /* Release result blobs when they're replaced. */
   useEffect(
@@ -555,6 +580,7 @@ export function App() {
     body.append("file", file);
     body.append("targetFormat", target);
     body.append("deliver", "job");
+    if (maxBytes) body.append("maxSize", String(maxBytes));
     const started = await api("/api/convert/file", { method: "POST", body, signal });
     if (!started.ok) throw new Error(`${file.name}: ${await failDetail(started)}`);
     const { job } = await started.json();
@@ -584,9 +610,23 @@ export function App() {
     signal: AbortSignal,
     label?: (text: string) => void
   ): Promise<OutFile> => {
-    /* The visitor's machine first: no upload, no queue, no engine needed. */
+    /* The visitor's machine first: no upload, no queue, no engine needed.
+       Doubly so for a size budget — the reason to shrink a photo is usually
+       that it is about to be uploaded somewhere, and this way the original
+       never travels to get there. */
     const from = extOf(file.name);
-    if (canConvertLocally(from, target)) {
+    if (maxBytes) {
+      if (canFitLocally(from, target)) {
+        try {
+          const done = await fitImageLocally(file, target, maxBytes);
+          setLocalCount((n) => n + 1);
+          return { name: done.name, url: URL.createObjectURL(done.blob) };
+        } catch {
+          /* browser couldn't decode it, or couldn't reach the budget */
+        }
+      }
+      if (label) return convertOnServer(file, signal, label);
+    } else if (canConvertLocally(from, target)) {
       try {
         const done = await convertImageLocally(file, target);
         setLocalCount((n) => n + 1);
@@ -615,6 +655,7 @@ export function App() {
     const body = new FormData();
     body.append("file", file);
     body.append("targetFormat", target);
+    if (maxBytes) body.append("maxSize", String(maxBytes));
     const res = await api("/api/convert/file", { method: "POST", body, signal });
     if (!res.ok) throw new Error(`${file.name}: ${await failDetail(res)}`);
     const blob = await res.blob();
@@ -764,6 +805,56 @@ export function App() {
 
   /* ── Render ──────────────────────────────────────────────────────────── */
 
+  const SIZE_PRESETS = ["500KB", "1MB", "2MB"];
+
+  /* Images are the one kind where people arrive with a number in mind — an
+     upload limit — rather than a format. */
+  const sizeControls = () => {
+    if (mode !== "file" || kind !== "image") return null;
+    const custom = SIZE_PRESETS.includes(maxSize) ? "" : maxSize;
+    return (
+      <div className="opt">
+        <span className="opt-label">Maximum size</span>
+        <div className="chips">
+          <button
+            className={`chip ${!maxSize ? "active" : ""}`}
+            onClick={() => setMaxSize("")}
+          >
+            no limit
+          </button>
+          {SIZE_PRESETS.map((preset) => (
+            <button
+              key={preset}
+              className={`chip ${maxSize === preset ? "active" : ""}`}
+              onClick={() => setMaxSize(preset)}
+            >
+              {preset.replace(/(KB|MB)/, " $1")}
+            </button>
+          ))}
+          <input
+            className="size-input"
+            type="text"
+            placeholder="or 800KB"
+            value={custom}
+            onChange={(e) => setMaxSize(e.target.value)}
+            aria-label="Custom maximum file size"
+          />
+        </div>
+        {maxSize.trim() && !maxBytes && (
+          <span className="chip-divider">
+            that isn&apos;t a size — try 500KB, 1.5MB, 900k
+          </span>
+        )}
+        {maxBytes !== null && (
+          <span className="chip-divider">
+            quality goes before pixels — the picture keeps its size on screen
+            unless the budget leaves no other way
+          </span>
+        )}
+      </div>
+    );
+  };
+
   const targetChips = () => {
     if (mode === "url") {
       return (
@@ -789,8 +880,19 @@ export function App() {
       <div className="opt">
         <span className="opt-label">Convert to</span>
         <div className="chips">
+          {maxBytes && (
+            <button
+              className={`chip ${target === "auto" ? "active" : ""}`}
+              onClick={() => setTarget("auto")}
+              title="Keep the format when it fits the budget — and re-encode rather than shrink the picture when it doesn't"
+            >
+              best fit
+            </button>
+          )}
           {opts.main
-            .filter((fmt) => fmt !== sourceExt)
+            /* Converting a file to what it already is does nothing — unless
+               the point is the size, in which case it does. */
+            .filter((fmt) => maxBytes !== null || fmt !== sourceExt)
             .map((fmt) => (
             <button
               key={fmt}
@@ -1039,7 +1141,10 @@ export function App() {
                         </div>
                       </div>
                     ) : (
-                      targetChips()
+                      <>
+                        {sizeControls()}
+                        {targetChips()}
+                      </>
                     )}
                   </>
                 )}
