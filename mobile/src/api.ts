@@ -15,6 +15,8 @@ export type Delivered = { download: string; filename: string };
 export type Health = {
   auth_required?: boolean;
   authorized?: boolean;
+  /** The engine's upload ceiling. Work done on the phone never meets it. */
+  max_upload_mb?: number;
   features?: Record<string, boolean>;
 };
 

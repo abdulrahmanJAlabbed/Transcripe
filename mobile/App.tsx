@@ -10,6 +10,7 @@ import { JetBrainsMono_500Medium } from "@expo-google-fonts/jetbrains-mono/500Me
 import * as Clipboard from "expo-clipboard";
 import * as DocumentPicker from "expo-document-picker";
 import type { File as FsFile } from "expo-file-system";
+import { File as FsFileCtor } from "expo-file-system";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import * as Sharing from "expo-sharing";
@@ -56,6 +57,7 @@ import {
   type Kind
 } from "./src/formats";
 import { f, Palette, radius, shadows, usePalette } from "./src/theme";
+import { canProcessLocally, processLocally } from "./src/localImage";
 import { Body, Chip, Cta, Display, Label, loopSlide, Mono, Segmented, Tap, Track } from "./src/ui";
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -112,6 +114,8 @@ function Studio() {
   const [engineLocked, setEngineLocked] = useState(false);
   const [canTranscribe, setCanTranscribe] = useState(true);
   const [canData, setCanData] = useState(true);
+  /* The engine's upload ceiling. Work done on the phone never meets it. */
+  const [maxUploadMb, setMaxUploadMb] = useState(0);
 
   const abortRef = useRef<AbortController | null>(null);
   const jobRef = useRef<string | null>(null);
@@ -135,6 +139,20 @@ function Studio() {
     kind === "image" && maxSize.trim() ? parseSize(maxSize) : null;
   const edge =
     kind === "image" && longestEdge.trim() ? Number(longestEdge) : null;
+  /* "auto" is how the engine is asked to choose, not a file extension. */
+  const label = target === "auto" ? "the best fit" : `.${target}`;
+  /* Work the phone does itself never travels, so the engine's ceiling is not
+     its problem. Everything else has to fit through it. */
+  const staysOnPhone =
+    mode === "file" &&
+    kind === "image" &&
+    !!picked &&
+    canProcessLocally(picked.ext, target);
+  const overLimit =
+    !!picked &&
+    !!maxUploadMb &&
+    !staysOnPhone &&
+    (picked.size ?? 0) > maxUploadMb * 1024 * 1024;
 
   /* Arming a budget changes the question from "which format" to "how small",
      so let the engine choose until the user takes the choice back. */
@@ -171,6 +189,7 @@ function Studio() {
         setEngineOn(true);
         setEngineLocked(!!info.auth_required && !info.authorized);
         // An engine without Whisper shouldn't be offered transcription.
+        if (info.max_upload_mb) setMaxUploadMb(info.max_upload_mb);
         if (info.features) {
           setCanTranscribe(info.features.transcribe !== false);
           setCanData(info.features.data !== false);
@@ -331,7 +350,26 @@ function Studio() {
         );
         jobRef.current = null;
       } else {
-        setStatus(`${picked!.name} → .${target}`);
+        // The phone first, for images it can handle. Nothing is uploaded, the
+        // engine's size ceiling doesn't apply, and it is faster than the trip
+        // over Wi-Fi. Anything it can't do falls through to the engine.
+        let done: FsFile | null = null;
+        if (kind === "image" && canProcessLocally(picked!.ext, target)) {
+          try {
+            setStatus(`${picked!.name} → ${label} · on this phone`);
+            const made = await processLocally(
+              { uri: picked!.uri, name: picked!.name, ext: picked!.ext },
+              { target, maxBytes, width: edge }
+            );
+            done = new FsFileCtor(made.uri);
+          } catch {
+            /* the engine can do what this phone couldn't */
+          }
+        }
+        if (done) {
+          out = done;
+        } else {
+        setStatus(`${picked!.name} → ${label}`);
         out = await convertFile(
           {
             uri: picked!.uri,
@@ -354,6 +392,7 @@ function Studio() {
           controller.signal
         );
         jobRef.current = null;
+        }
       }
       setResult(out);
       setPhase("done");
@@ -698,6 +737,25 @@ function Studio() {
                     />
                   ))}
                 </View>
+              </View>
+            )}
+
+            {overLimit && (
+              <View style={st.note}>
+                <Body style={{ fontSize: 13, color: c.ink2 }}>
+                  {picked!.name} is {formatBytes(picked!.size ?? 0)} — this
+                  engine accepts up to {maxUploadMb} MB. Run the studio on your
+                  own machine and the limit is yours to set.
+                </Body>
+              </View>
+            )}
+
+            {staysOnPhone && (
+              <View style={st.note}>
+                <Body style={{ fontSize: 13, color: c.ink2 }}>
+                  This one runs on your phone — nothing is uploaded, and the
+                  engine's size limit doesn't apply.
+                </Body>
               </View>
             )}
 
