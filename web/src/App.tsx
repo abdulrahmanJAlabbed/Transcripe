@@ -23,7 +23,7 @@ import {
 import { CleanHeroBackground } from "./components/CleanHeroBackground";
 import { LiveStats } from "./components/LiveStats";
 import Orb from "./components/reactbits/Orb";
-import { useMagnetic, useScrollReveal, useSpotlight } from "./motion";
+import { useScrollReveal, useSpotlight } from "./motion";
 import { services, Service } from "./data/services";
 import { api, setToken } from "./token";
 import {
@@ -236,7 +236,6 @@ export function App() {
   const [theme, setTheme] = useState<Theme>(() => currentTheme());
   const [localCount, setLocalCount] = useState(0);
   useScrollReveal();
-  const ctaRef = useMagnetic<HTMLButtonElement>();
   const spotlightRef = useSpotlight<HTMLDivElement>();
   const [toast, setToast] = useState<{ id: number; msg: string } | null>(null);
   const [copiedEngine, setCopiedEngine] = useState<string | null>(null);
@@ -1314,7 +1313,7 @@ export function App() {
                 </div>
               </div>
             ) : (
-              <button className="cta" ref={ctaRef} disabled={!canConvert} onClick={convert}>
+              <button className="cta" disabled={!canConvert} onClick={convert}>
                 {mode === "url"
                   ? `Fetch & convert${target ? ` to .${target}` : ""}`
                   : kind === "other"

@@ -42,42 +42,6 @@ export function useScrollReveal() {
   }, []);
 }
 
-/** A button that leans toward the cursor, then settles back. */
-export function useMagnetic<T extends HTMLElement>(strength = 0.28) {
-  const ref = useRef<T>(null);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    if (window.matchMedia("(pointer: coarse)").matches) return;
-
-    const onMove = (e: PointerEvent) => {
-      const box = el.getBoundingClientRect();
-      const dx = e.clientX - (box.left + box.width / 2);
-      const dy = e.clientY - (box.top + box.height / 2);
-      const reach = 90;
-      const near =
-        Math.abs(dx) < box.width / 2 + reach && Math.abs(dy) < box.height / 2 + reach;
-      el.style.transform = near
-        ? `translate(${dx * strength}px, ${dy * strength * 0.6}px)`
-        : "";
-    };
-    const onLeave = () => {
-      el.style.transform = "";
-    };
-
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerleave", onLeave);
-    return () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerleave", onLeave);
-    };
-  }, [strength]);
-
-  return ref;
-}
-
 /** Cards light up under the cursor: track the pointer as CSS variables. */
 export function useSpotlight<T extends HTMLElement>() {
   const ref = useRef<T>(null);
