@@ -35,11 +35,32 @@ def _mktemp_glb() -> Path:
     return Path(name)
 
 
+# glTF-Transform's own dependencies use import attributes (`with { type:
+# "json" }`), which Node only understands from 20.10. On an older runtime the
+# toolchain dies with a SyntaxError deep inside a dependency, so ask first.
+MIN_NODE = (20, 10)
+
+
+def _node_version(node: str) -> tuple[int, ...]:
+    try:
+        out = subprocess.run([node, "--version"], capture_output=True,
+                             text=True, timeout=10).stdout.strip().lstrip("v")
+        return tuple(int(part) for part in out.split(".")[:2])
+    except Exception:
+        return ()
+
+
 def _ensure_toolchain(console: Console) -> str:
     node = shutil.which("node")
     if not node:
         raise RuntimeError(
             "Node.js not found. Install Node.js (https://nodejs.org) to convert 3D models.")
+    version = _node_version(node)
+    if version and version < MIN_NODE:
+        raise RuntimeError(
+            f"Node {'.'.join(map(str, version))} is too old for the 3D toolchain — "
+            f"it needs {'.'.join(map(str, MIN_NODE))} or newer. "
+            "Upgrade Node.js (https://nodejs.org).")
     have_assimp = (JS_DIR / "node_modules" / "assimpjs").exists()
     have_gltf = (JS_DIR / "node_modules" / "@gltf-transform" / "cli").exists()
     if not (have_assimp and have_gltf):
@@ -47,19 +68,41 @@ def _ensure_toolchain(console: Console) -> str:
         if not npm:
             raise RuntimeError("npm not found. Install Node.js (which includes npm).")
         with console.status("[bold cyan]Installing 3D toolchain (npm, first run only)…[/bold cyan]"):
-            res = subprocess.run([npm, "install", "--no-audit", "--no-fund"],
+            # --include=optional matters: sharp ships its native binary as an
+            # optional per-platform package, and without it the toolchain
+            # installs "successfully" and then dies on first use saying it
+            # cannot load sharp for this runtime.
+            res = subprocess.run([npm, "install", "--include=optional",
+                                  "--no-audit", "--no-fund"],
                                  cwd=str(JS_DIR), capture_output=True, text=True)
         if res.returncode != 0:
-            raise RuntimeError(f"npm install failed: {res.stderr.strip().splitlines()[-1:]}" )
+            raise RuntimeError(f"npm install failed: {_node_error(res, 'npm error')}")
     return node
+
+
+def _node_error(res, fallback: str) -> str:
+    """The useful part of a Node failure.
+
+    Taking the last line alone turned a precise SyntaxError into "Node.js
+    v18.19.1" — the crash banner — which is the one line that says nothing.
+    The real cause is the first line naming an error, so prefer that and keep
+    a little context around it.
+    """
+    text = (res.stderr or "").strip() or (res.stdout or "").strip()
+    if not text:
+        return fallback
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for i, line in enumerate(lines):
+        if "Error" in line or "error" in line:
+            return " · ".join(lines[i:i + 2])[:400]
+    return " · ".join(lines[-3:])[:400]
 
 
 def _run_node(script: str, args: list[str], console: Console) -> str:
     node = _ensure_toolchain(console)
     res = subprocess.run([node, str(JS_DIR / script), *args], capture_output=True, text=True)
     if res.returncode != 0:
-        msg = (res.stderr.strip() or res.stdout.strip() or "unknown error").splitlines()[-1]
-        raise RuntimeError(msg)
+        raise RuntimeError(_node_error(res, "unknown error"))
     return res.stdout
 
 
@@ -68,8 +111,7 @@ def _gltf_transform(args: list[str], console: Console) -> str:
     binp = JS_DIR / "node_modules" / ".bin" / "gltf-transform"
     res = subprocess.run([str(binp), *args], capture_output=True, text=True)
     if res.returncode != 0:
-        msg = (res.stderr.strip() or res.stdout.strip() or "gltf-transform error").splitlines()[-1]
-        raise RuntimeError(msg)
+        raise RuntimeError(_node_error(res, "gltf-transform error"))
     return res.stdout
 
 
