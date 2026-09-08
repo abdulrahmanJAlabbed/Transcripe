@@ -1,79 +1,59 @@
 # Transcripe — phone app
 
-The studio, on your phone. It has no engines of its own: it picks a file or a
-link, hands the job to the Transcripe engine running on your laptop, and saves
-the result back to your phone. Nothing leaves your Wi-Fi.
+The studio, on your phone. Photos are resized and re-encoded **on the device
+itself**, so they never leave it. Everything else — video, audio, subtitles,
+tabular data, links — goes to the Transcripe engine and comes back.
 
 Built with Expo SDK 54 — runs in **Expo Go**, no Xcode or Android Studio needed.
 
 ---
 
-## Run it in three steps
-
-**1 — Start the engine on your laptop:**
-
-```bash
-transcripe studio --lan          # or, from a git checkout:
-TRANSCRIPE_HOST=0.0.0.0 python server.py
-```
-
-`--lan` is the part that matters — it binds `0.0.0.0`. The default `127.0.0.1`
-is only reachable by the laptop itself, so your phone would see nothing.
-
-**2 — Tell the app where the engine is.** Find your laptop's LAN address:
-
-```bash
-ip -4 addr | grep -v 127.0.0.1 | grep inet     # Linux
-ipconfig getifaddr en0                          # macOS
-```
-
-Copy `.env.example` to `.env` and fill in that address plus the token the
-studio printed when it started:
-
-```
-EXPO_PUBLIC_API_URL=http://192.168.0.105:8000
-EXPO_PUBLIC_API_TOKEN=me0Os_SWGMS1cIpIsrvYs2sv
-```
-
-`transcripe studio --lan` prints both lines ready to paste — a studio open to
-the network is token-protected, since it downloads from arbitrary URLs and
-writes to your laptop's disk. Keep the `http://` and the `:8000`.
-
-**3 — Start the app:**
+## Run it
 
 ```bash
 npm install     # first time only
 npx expo start
 ```
 
-Scan the QR code with **Expo Go** (Android) or the **Camera app** (iOS). Phone
-and laptop must be on the same Wi-Fi.
+Scan the QR code with **Expo Go** (Android) or the **Camera app** (iOS).
+
+That is the whole setup. The app talks to the hosted engine at
+**alabed.site** by default, so there is nothing to configure, no address to
+find, and no laptop that has to be awake and on the same Wi-Fi.
+
+### Pointing it at your own engine (optional)
+
+Only useful while developing. Copy `.env.example` to `.env` and set
+`EXPO_PUBLIC_API_URL` to a studio started with `transcripe studio --lan`,
+which binds `0.0.0.0` and prints the token to paste alongside it.
 
 ---
 
 ## Reading the app
 
-The dot next to the wordmark is the engine heartbeat, polled every 15 seconds:
+**From my phone** picks a photo or video from the camera roll, or any file via
+*Browse files instead*.
 
-| Dot | Meaning |
-| --- | --- |
-| green — *engine on* | the app can reach your laptop; convert away |
-| green — *locked* | reachable, but the token is missing or wrong — check `EXPO_PUBLIC_API_TOKEN` and restart Expo |
-| red — *engine off* | engine not running, wrong IP in `.env`, different Wi-Fi, or a firewall blocking port 8000 |
+Images are handled on the phone: change the format, set exact dimensions, or
+give a maximum file size and it searches for the best quality that fits.
+Nothing is uploaded for these, and the engine's upload ceiling doesn't apply —
+the app says as much when a job is staying put.
 
-**From my phone** picks a video or photo from the camera roll (or any file via
-*Browse files instead*) and converts it — audio, video, and image formats, plus
-**transcription**: choose `.srt` or `.txt` and Whisper runs on the laptop while
-the app polls, so a long recording can't time out. Anything else (PDF, DOCX,
-archives, 3D models) belongs to the desktop CLI, and the app says so instead of
-pretending.
+Everything else goes to the engine, including **transcription**: choose `.srt`
+or `.txt` and Whisper runs there while the app polls, so a long recording
+can't time out. Formats the engine can't take (PDF, DOCX, archives, 3D models)
+belong to the desktop CLI, and the app says so instead of pretending.
 
 **From a link** takes a YouTube / TikTok / Instagram / X / Spotify URL and
 fetches it as video or audio. Switching to that tab offers whatever link is on
 your clipboard.
 
-Results land in the app's cache and open the native share sheet, so you can
-save to Files/Photos or send them onward.
+Every finished file says where it was made — *on this phone* or *on the
+engine* — and opens the native share sheet, so you can save to Files/Photos or
+send it onward.
+
+There is no engine status light. Whether the engine is reachable matters at
+the moment something is being converted, and the attempt says so then.
 
 ---
 
@@ -83,7 +63,7 @@ save to Files/Photos or send them onward.
   fit in the app's memory.
 - The engine hands back a one-shot download link that expires after 15 minutes
   and dies on first use.
+- The hosted engine caps uploads at 100 MB and has no Whisper, so it doesn't
+  offer transcription. On-device image work is bound by neither.
 - `npm run web` opens the same app in a browser — handy for a quick look, but
   file picking and downloads behave differently there than on a real phone.
-- Changing Wi-Fi networks usually changes your laptop's IP; update `.env` and
-  restart `npx expo start` when the dot goes red.
