@@ -226,6 +226,9 @@ export function App() {
   /* The picture's own size, read from the file — presets and the "now" label
      both need it, and guessing would put the wrong numbers on screen. */
   const [natural, setNatural] = useState<{ width: number; height: number } | null>(null);
+  /* The refinements stay folded away until asked for. Most conversions are
+     "this file, that format" and want nothing else on screen. */
+  const [advanced, setAdvanced] = useState(false);
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [statusLabel, setStatusLabel] = useState("");
@@ -265,6 +268,9 @@ export function App() {
   const engineHandles = (k: Kind | null) =>
     k !== "data" || features.data !== false;
   const kind: Kind | null = entries.length ? kindOf(entries[0].ext) : null;
+  /* "auto" is how the engine is asked to choose; it is not a file extension,
+     and showing it as one puts ".auto" in front of the user. */
+  const targetLabel = target === "auto" ? "the best fit" : `.${target}`;
   /* Only images have a size budget: it is the one job where what the user
      wants is a number of kilobytes, not a different format. */
   const maxBytes = useMemo(
@@ -586,7 +592,7 @@ export function App() {
     const body = new FormData();
     body.append("file", file);
     body.append("targetFormat", target);
-    setStatusLabel(`${prefix}${file.name} → .${target}`);
+    setStatusLabel(`${prefix}${file.name} → ${targetLabel}`);
     const started = await api("/api/transcribe", { method: "POST", body, signal });
     if (!started.ok) throw new Error(`${file.name}: ${await failDetail(started)}`);
     const { job, model } = await started.json();
@@ -644,7 +650,7 @@ export function App() {
       if (state.status === "error") throw new Error(`${file.name}: ${state.detail}`);
       if (state.status === "cancelled") throw new DOMException("aborted", "AbortError");
       const pct = Math.round((state.progress ?? 0) * 100);
-      label(`${file.name} → .${target}${pct ? ` · ${pct}%` : ""}`);
+      label(`${file.name} → ${targetLabel}${pct ? ` · ${pct}%` : ""}`);
       if (state.status === "done") {
         jobRef.current = null;
         const dl = await api(state.download, { signal });
@@ -686,10 +692,10 @@ export function App() {
     }
     if (canConvertVideoLocally(from, target)) {
       try {
-        setStatusLabel(`${file.name} → .${target} · on this device`);
+        setStatusLabel(`${file.name} → ${targetLabel} · on this device`);
         const done = await convertVideoLocally(file, target, (p) =>
           setStatusLabel(
-            `${file.name} → .${target} · on this device · ${Math.round(p * 100)}%`
+            `${file.name} → ${targetLabel} · on this device · ${Math.round(p * 100)}%`
           )
         );
         setLocalCount((n) => n + 1);
@@ -712,7 +718,7 @@ export function App() {
     const blob = await res.blob();
     const name =
       filenameFromDisposition(res.headers.get("content-disposition")) ||
-      `${file.name.replace(/\.[^.]+$/, "")}.${target}`;
+      `${file.name.replace(/\.[^.]+$/, "")}.${target === "auto" ? "img" : target}`;
     return { name, url: URL.createObjectURL(blob) };
   };
 
@@ -740,7 +746,7 @@ export function App() {
     const results: OutFile[] = new Array(total);
     let next = 0;
     let done = 0;
-    setStatusLabel(`converting ${total} files → .${target}`);
+    setStatusLabel(`converting ${total} files → ${targetLabel}`);
 
     const worker = async () => {
       for (;;) {
@@ -748,7 +754,7 @@ export function App() {
         if (i >= total) return;
         results[i] = await convertOne(entries[i].file, signal);
         done += 1;
-        setStatusLabel(`${done} of ${total} converted → .${target}`);
+        setStatusLabel(`${done} of ${total} converted → ${targetLabel}`);
       }
     };
 
@@ -797,6 +803,10 @@ export function App() {
   const startOver = () => {
     setEntries([]);
     setMediaUrl("");
+    setMaxSize("");
+    setOutWidth("");
+    setOutHeight("");
+    setAdvanced(false);
     resetResult();
   };
 
@@ -883,8 +893,12 @@ export function App() {
         : outHeight === String(edge) && !outWidth
       : false;
 
+  /* An .ico is a bundle of standard icon sizes, so an exact width isn't
+     something the format lets us honour. */
+  const dimensionsApply = target !== "ico";
+
   const dimensionControls = () => {
-    if (mode !== "file" || kind !== "image") return null;
+    if (mode !== "file" || kind !== "image" || !dimensionsApply) return null;
     const longest = natural ? Math.max(natural.width, natural.height) : 0;
     return (
       <div className="opt">
@@ -917,25 +931,29 @@ export function App() {
               {edge} px
             </button>
           ))}
-          <input
-            className="size-input dim-input"
-            type="text"
-            inputMode="numeric"
-            placeholder="width"
-            value={outWidth}
-            onChange={(e) => setOutWidth(e.target.value)}
-            aria-label="Output width in pixels"
-          />
-          <span className="chip-divider">×</span>
-          <input
-            className="size-input dim-input"
-            type="text"
-            inputMode="numeric"
-            placeholder="height"
-            value={outHeight}
-            onChange={(e) => setOutHeight(e.target.value)}
-            aria-label="Output height in pixels"
-          />
+          <span className="dim-pair">
+            <input
+              className="size-input dim-input"
+              type="text"
+              inputMode="numeric"
+              placeholder="width"
+              value={outWidth}
+              onChange={(e) => setOutWidth(e.target.value)}
+              aria-label="Output width in pixels"
+            />
+            <span className="dim-times" aria-hidden="true">
+              ×
+            </span>
+            <input
+              className="size-input dim-input"
+              type="text"
+              inputMode="numeric"
+              placeholder="height"
+              value={outHeight}
+              onChange={(e) => setOutHeight(e.target.value)}
+              aria-label="Output height in pixels"
+            />
+          </span>
         </div>
         {badDimension ? (
           <span className="chip-divider">
@@ -996,6 +1014,52 @@ export function App() {
             quality goes before pixels — the picture keeps its size on screen
             unless the budget leaves no other way
           </span>
+        )}
+      </div>
+    );
+  };
+
+  /* What the refinements currently add up to, so folding them away never
+     hides a setting that is doing something. */
+  const optionSummary = () => {
+    const bits: string[] = [];
+    if (outWidth && outHeight) bits.push(`${outWidth} × ${outHeight}`);
+    else if (outWidth) bits.push(`${outWidth} px wide`);
+    else if (outHeight) bits.push(`${outHeight} px tall`);
+    if (maxBytes) bits.push(`max ${maxSize.replace(/(KB|MB)/, " $1")}`);
+    return bits.join(" · ");
+  };
+
+  /* Refinements for the file in hand. Images are the only kind with any so
+     far, so for everything else the drawer isn't there at all rather than
+     opening onto nothing. */
+  const moreOptions = () => {
+    if (mode !== "file" || kind !== "image") return null;
+    const summary = optionSummary();
+    return (
+      <div className="more">
+        <button
+          className={`more-toggle ${advanced ? "open" : ""}`}
+          onClick={() => setAdvanced((v) => !v)}
+          aria-expanded={advanced}
+        >
+          <span className="more-sign" aria-hidden="true">
+            {advanced ? "−" : "+"}
+          </span>
+          {advanced ? "Fewer options" : "More options"}
+          {!advanced && summary && <span className="more-summary">{summary}</span>}
+        </button>
+        {advanced && (
+          <div className="more-body">
+            {dimensionControls()}
+            {sizeControls()}
+            {target === "ico" && (
+              <span className="chip-divider">
+                an .ico holds a standard set of icon sizes, so its dimensions
+                aren&apos;t ours to choose
+              </span>
+            )}
+          </div>
         )}
       </div>
     );
@@ -1288,9 +1352,8 @@ export function App() {
                       </div>
                     ) : (
                       <>
-                        {dimensionControls()}
-                        {sizeControls()}
                         {targetChips()}
+                        {moreOptions()}
                       </>
                     )}
                   </>
@@ -1470,7 +1533,7 @@ export function App() {
                   ? "This engine has no spreadsheet support"
                   : isTranscribing
                   ? `Transcribe to .${target}`
-                  : `Convert${target ? ` to .${target}` : ""}`}
+                  : `Convert${target ? ` to ${targetLabel}` : ""}`}
                 <ArrowRight className="arrow" size={17} />
               </button>
             )}

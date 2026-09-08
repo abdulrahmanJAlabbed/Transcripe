@@ -663,6 +663,69 @@ a {
   color: var(--paper);
 }
 
+.more {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.more-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-start;
+  padding: 6px 12px 6px 8px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 999px;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  color: var(--ink-2);
+  transition: border-color 0.18s ease, color 0.18s ease, background 0.18s ease;
+}
+.more-toggle:hover {
+  border-color: var(--ink-3);
+  color: var(--ink);
+  background: var(--card);
+}
+.more-toggle.open {
+  border-style: solid;
+}
+.more-sign {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 999px;
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  font-size: 0.8rem;
+  line-height: 1;
+}
+.more-summary {
+  color: var(--ink-3);
+  border-left: 1px solid var(--line-strong);
+  padding-left: 8px;
+  margin-left: 2px;
+}
+.more-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 15px 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--well, var(--card));
+  animation: more-in 0.22s var(--ease-out) both;
+}
+@keyframes more-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .more-body { animation: none; }
+}
 .opt-note {
   font-family: var(--font-mono);
   font-size: 0.66rem;
@@ -673,6 +736,18 @@ a {
 }
 .dim-input {
   width: 78px;
+}
+/* Width, ×, height read as one control, so they wrap as one too. */
+.dim-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+}
+.dim-times {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--ink-3);
 }
 .size-input {
   flex: none;
