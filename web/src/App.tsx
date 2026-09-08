@@ -209,7 +209,7 @@ const WEB_ABLE: Record<string, Mode> = {
 export function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const jobRef = useRef<string | null>(null);
+  const jobsRef = useRef<Set<string>>(new Set());
   const cardRef = useRef<HTMLDivElement>(null);
 
   const [mode, setMode] = useState<Mode>("file");
@@ -243,6 +243,10 @@ export function App() {
   // What the engine on the other end can actually do. Unknown until the first
   // heartbeat answers, and treated as capable so nothing flickers away.
   const [features, setFeatures] = useState<Record<string, boolean>>({});
+  /* The engine's own upload ceiling. It reports one; ignoring it meant a big
+     file uploaded until the server cut it off, which reads as a failure with
+     no cause. 0 = not heard from it yet. */
+  const [maxUploadMb, setMaxUploadMb] = useState(0);
   const [theme, setTheme] = useState<Theme>(() => currentTheme());
   const [localCount, setLocalCount] = useState(0);
   useScrollReveal();
@@ -334,6 +338,7 @@ export function App() {
         setEngineOnline(res.ok);
         setEngineLocked(!!info?.auth_required && !info?.authorized);
         if (info?.features) setFeatures(info.features);
+        if (info?.max_upload_mb) setMaxUploadMb(info.max_upload_mb);
       } catch {
         if (!alive) return;
         misses += 1;
@@ -430,6 +435,20 @@ export function App() {
     });
     resetResult();
   };
+
+  /* Anything the page can convert itself never reaches the engine, so the
+     engine's upload ceiling doesn't apply to it. */
+  const goesToEngine = (entry: Entry) =>
+    !canConvertLocally(entry.ext, target) &&
+    !canConvertVideoLocally(entry.ext, target) &&
+    !(maxBytes && canFitLocally(entry.ext, target));
+
+  const tooBig = useMemo(() => {
+    if (!maxUploadMb || mode !== "file") return [];
+    const ceiling = maxUploadMb * 1024 * 1024;
+    return entries.filter((e) => e.file.size > ceiling && goesToEngine(e));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries, maxUploadMb, target, maxBytes, mode]);
 
   /* One target applies to the whole batch, so files of a different kind than
      the first would fail one by one. Say it up front instead. */
@@ -596,7 +615,7 @@ export function App() {
     const started = await api("/api/transcribe", { method: "POST", body, signal });
     if (!started.ok) throw new Error(`${file.name}: ${await failDetail(started)}`);
     const { job, model } = await started.json();
-    jobRef.current = job;
+    jobsRef.current.add(job);
 
     for (;;) {
       if (signal.aborted) throw new DOMException("aborted", "AbortError");
@@ -611,7 +630,7 @@ export function App() {
         throw new DOMException("aborted", "AbortError");
       }
       if (state.status === "done") {
-        jobRef.current = null;
+        jobsRef.current.delete(job);
         const dl = await api(state.download, { signal });
         if (!dl.ok) throw new Error(`${file.name}: could not fetch the transcript`);
         return {
@@ -639,7 +658,7 @@ export function App() {
     const started = await api("/api/convert/file", { method: "POST", body, signal });
     if (!started.ok) throw new Error(`${file.name}: ${await failDetail(started)}`);
     const { job } = await started.json();
-    jobRef.current = job;
+    jobsRef.current.add(job);
 
     for (;;) {
       if (signal.aborted) throw new DOMException("aborted", "AbortError");
@@ -652,7 +671,7 @@ export function App() {
       const pct = Math.round((state.progress ?? 0) * 100);
       label(`${file.name} → ${targetLabel}${pct ? ` · ${pct}%` : ""}`);
       if (state.status === "done") {
-        jobRef.current = null;
+        jobsRef.current.delete(job);
         const dl = await api(state.download, { signal });
         if (!dl.ok) throw new Error(`${file.name}: could not fetch the result`);
         return { name: state.filename, url: URL.createObjectURL(await dl.blob()) };
@@ -752,7 +771,9 @@ export function App() {
       for (;;) {
         const i = next++;
         if (i >= total) return;
-        results[i] = await convertOne(entries[i].file, signal);
+        // Through the job path, same as a single file: a long conversion
+        // must not sit on an open connection waiting to be timed out.
+        results[i] = await convertOne(entries[i].file, signal, () => {});
         done += 1;
         setStatusLabel(`${done} of ${total} converted → ${targetLabel}`);
       }
@@ -792,11 +813,10 @@ export function App() {
   /* Tell the engine too — otherwise the laptop keeps transcribing for a
      result the browser has already walked away from. */
   const cancel = () => {
-    const job = jobRef.current;
-    if (job) {
-      jobRef.current = null;
+    for (const job of jobsRef.current) {
       api(`/api/jobs/${job}/cancel`, { method: "POST" }).catch(() => {});
     }
+    jobsRef.current.clear();
     abortRef.current?.abort();
   };
 
@@ -813,6 +833,7 @@ export function App() {
   const canConvert =
     phase !== "working" &&
     !badDimension &&
+    tooBig.length === 0 &&
     (mode === "url"
       ? mediaUrl.trim().length > 0
       : entries.length > 0 && kind !== "other" && !!target);
@@ -1308,6 +1329,20 @@ export function App() {
                     >
                       <Plus size={14} /> Add more files
                     </button>
+
+                    {tooBig.length > 0 && (
+                      <div className="offline-chip" role="status">
+                        <span>
+                          {tooBig.length === 1
+                            ? `${tooBig[0].file.name} is ${formatBytes(
+                                tooBig[0].file.size
+                              )} — this engine accepts up to ${maxUploadMb} MB`
+                            : `${tooBig.length} files are over this engine's ${maxUploadMb} MB limit`}
+                          . Run the studio on your own machine and the limit is
+                          yours to set.
+                        </span>
+                      </div>
+                    )}
 
                     {strays.length > 0 && (
                       <div className="offline-chip" role="status">
