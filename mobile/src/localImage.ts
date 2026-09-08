@@ -15,7 +15,7 @@
  * engine — a slower answer beats no answer.
  */
 import { File } from "expo-file-system";
-import { manipulateAsync, SaveFormat } from "expo-image-manipulator";
+import { ImageManipulator, manipulateAsync, SaveFormat } from "expo-image-manipulator";
 
 const QUALITY_CEILING = 0.95;
 const QUALITY_FLOOR = 0.55;
@@ -42,6 +42,25 @@ export type LocalImage = {
   height: number;
   size: number;
 };
+
+/** The picture's true pixel size.
+ *
+ *  React Native's Image.getSize answers in density-independent points on
+ *  Android, so a 3000x2000 photo came back as 1500x1000 on a 2x screen — half
+ *  the truth, and enough to hide a resize preset that would have worked.
+ *  Decoding through the manipulator gives real pixels and writes no file.
+ */
+export async function readSize(
+  uri: string
+): Promise<{ width: number; height: number } | null> {
+  try {
+    const image = await ImageManipulator.manipulate(uri).renderAsync();
+    const size = { width: image.width, height: image.height };
+    return size.width && size.height ? size : null;
+  } catch {
+    return null;
+  }
+}
 
 export function canProcessLocally(sourceExt: string, target: string): boolean {
   const from = sourceExt.toLowerCase();

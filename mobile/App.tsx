@@ -20,7 +20,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
-  Image,
   Keyboard,
   KeyboardAvoidingView,
   Platform,
@@ -59,14 +58,23 @@ import {
   type Kind
 } from "./src/formats";
 import { f, Palette, radius, shadows, usePalette } from "./src/theme";
-import { canProcessLocally, processLocally } from "./src/localImage";
+import { canProcessLocally, processLocally, readSize } from "./src/localImage";
 import { Body, Chip, Cta, Display, Label, loopSlide, Mono, Segmented, Tap, Track } from "./src/ui";
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 type Mode = "file" | "url";
 type Phase = "idle" | "working" | "done";
-type Picked = { uri: string; name: string; size?: number; mimeType?: string; ext: string };
+type Picked = {
+  uri: string;
+  name: string;
+  size?: number;
+  mimeType?: string;
+  ext: string;
+  /** Real pixels, when the picker knows them. */
+  width?: number;
+  height?: number;
+};
 
 /* Resolution choice only means something for video targets. */
 const URL_AUDIO_ONLY = ["mp3", "m4a", "wav", "flac"];
@@ -196,11 +204,12 @@ function Studio() {
       return;
     }
     let alive = true;
-    Image.getSize(
-      picked.uri,
-      (width, height) => alive && setNatural({ width, height }),
-      () => alive && setNatural(null)
-    );
+    if (picked.width && picked.height) {
+      setNatural({ width: picked.width, height: picked.height });
+      return;
+    }
+    // Picked through the file browser, which doesn't report dimensions.
+    readSize(picked.uri).then((size) => alive && setNatural(size));
     return () => {
       alive = false;
     };
@@ -295,7 +304,9 @@ function Studio() {
       name,
       size: a.fileSize,
       mimeType: a.mimeType,
-      ext: extOf(name)
+      ext: extOf(name),
+      width: a.width,
+      height: a.height
     });
   };
 
@@ -397,7 +408,18 @@ function Studio() {
               { uri: picked!.uri, name: picked!.name, ext: picked!.ext },
               { target, maxBytes, width: edge }
             );
-            done = new FsFileCtor(made.uri);
+            // The manipulator writes to a cache file named by a UUID. Saving
+            // or sharing that hands someone a file they can't recognise, so
+            // give it the picture's own name before it leaves here.
+            const produced = new FsFileCtor(made.uri);
+            const named = new FsFileCtor(produced.parentDirectory, made.name);
+            try {
+              if (named.exists) named.delete();
+              produced.move(named);
+              done = named;
+            } catch {
+              done = produced;
+            }
           } catch {
             /* the engine can do what this phone couldn't */
           }
@@ -960,7 +982,7 @@ function Studio() {
                     : TEXT_TARGETS.includes(target) &&
                       (kind === "audio" || kind === "video")
                     ? `Transcribe to .${target}`
-                    : `Convert to .${target}`
+                    : `Convert to ${label}`
                 }
                 onPress={run}
                 disabled={!canRun}
