@@ -212,6 +212,7 @@ def test_a_partial_download_can_be_resumed(open_studio, fixtures):
         assert client.get(url).status_code == 404
 
 
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not installed")
 def test_a_range_past_the_end_is_refused(open_studio, fixtures):
     with TestClient(open_studio.app) as client:
         started = client.post(
