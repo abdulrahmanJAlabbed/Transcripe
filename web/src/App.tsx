@@ -238,8 +238,9 @@ export function App() {
 
   const [isDragging, setIsDragging] = useState(false);
   const [globalDrag, setGlobalDrag] = useState(false);
-  const [engineOnline, setEngineOnline] = useState<boolean | null>(null);
-  const [engineLocked, setEngineLocked] = useState(false);
+  /* Set when a conversion comes back 401 — the one engine problem the page
+     can fix in place, by taking the token. */
+  const [needsToken, setNeedsToken] = useState(false);
   // What the engine on the other end can actually do. Unknown until the first
   // heartbeat answers, and treated as capable so nothing flickers away.
   const [features, setFeatures] = useState<Record<string, boolean>>({});
@@ -256,7 +257,6 @@ export function App() {
   const [pipCopied, copyPip] = useCopy();
   const [termCopied, copyTerm] = useCopy();
   const [cmdCopied, copyCmd] = useCopy();
-  const [offlineCopied, copyOffline] = useCopy();
 
   const toastTimer = useRef(0);
   const showToast = (msg: string) => {
@@ -320,29 +320,27 @@ export function App() {
      browser chrome in step with it. */
   useEffect(watchSystemTheme, []);
 
-  /* Local engine heartbeat. Health is open even on a token-locked studio, so
-     "running but locked" reads differently from "not running". */
+  /* Ask the engine what it can do — quietly.
+   *
+   * Whether it is up is not a thing to sit and watch. It matters at the
+   * moment something is converted, and the attempt itself reports that far
+   * better than a dot can. What this is for is the shape of the choices: an
+   * engine without Whisper shouldn't be offered transcription, one without
+   * pandas shouldn't be offered spreadsheets, and its upload ceiling has to
+   * come from somewhere. */
   useEffect(() => {
     let alive = true;
-    // One slow reply on a loaded machine shouldn't announce the engine as
-    // dead while it is busy converting; take two misses to call it offline.
-    let misses = 0;
     const check = async () => {
       try {
         const res = await api("/api/health", {
           signal: AbortSignal.timeout(8000)
         });
         const info = res.ok ? await res.json().catch(() => null) : null;
-        if (!alive) return;
-        misses = 0;
-        setEngineOnline(res.ok);
-        setEngineLocked(!!info?.auth_required && !info?.authorized);
-        if (info?.features) setFeatures(info.features);
-        if (info?.max_upload_mb) setMaxUploadMb(info.max_upload_mb);
+        if (!alive || !info) return;
+        if (info.features) setFeatures(info.features);
+        if (info.max_upload_mb) setMaxUploadMb(info.max_upload_mb);
       } catch {
-        if (!alive) return;
-        misses += 1;
-        if (misses >= 2) setEngineOnline(false);
+        /* nothing to say about it until there is work to do */
       }
     };
     check();
@@ -787,6 +785,7 @@ export function App() {
 
   const convert = async () => {
     setError("");
+    setNeedsToken(false);
     setPhase("working");
     const controller = new AbortController();
     abortRef.current = controller;
@@ -803,7 +802,18 @@ export function App() {
         setPhase("idle");
         return;
       }
-      setError((err as Error)?.message || "Could not reach the local engine.");
+      const message = (err as Error)?.message ?? "";
+      // The engine's state is news only now, when it stopped something.
+      const unreachable =
+        message.includes("Failed to fetch") ||
+        message.includes("NetworkError") ||
+        message.includes("Load failed");
+      setNeedsToken(/token/i.test(message) || message.includes("401"));
+      setError(
+        unreachable
+          ? "Couldn't reach the engine. Check your connection and try again."
+          : message || "The engine couldn't finish that one."
+      );
       setPhase("idle");
     } finally {
       abortRef.current = null;
@@ -1162,9 +1172,9 @@ export function App() {
               ))}
             </>
           )}
-          {opts.text && !canTranscribe && engineOnline && (
+          {opts.text && !canTranscribe && (
             <span className="chip-divider">
-              transcription needs the local studio
+              transcription isn't available on this engine
             </span>
           )}
         </div>
@@ -1338,8 +1348,8 @@ export function App() {
                                 tooBig[0].file.size
                               )} — this engine accepts up to ${maxUploadMb} MB`
                             : `${tooBig.length} files are over this engine's ${maxUploadMb} MB limit`}
-                          . Run the studio on your own machine and the limit is
-                          yours to set.
+                          . Larger files need the command-line tool, which has
+                          no such limit.
                         </span>
                       </div>
                     )}
@@ -1463,40 +1473,20 @@ export function App() {
               </div>
             )}
 
-            {engineOnline === false && (
-              <div className="offline-chip" role="status">
-                <span>
-                  Local engine is offline — start it with{" "}
-                  <code>transcripe studio</code>
-                </span>
-                <button
-                  onClick={() => copyOffline("transcripe studio")}
-                  aria-label="Copy start command"
-                >
-                  {offlineCopied ? <Check size={13} /> : <Copy size={13} />}
-                </button>
-              </div>
-            )}
-
-            {engineOnline && engineLocked && (
-              <div className="offline-chip" role="status">
-                <span>
-                  This studio is open to the network, so it needs its token —
-                  paste the one it printed on startup.
-                </span>
-                <input
-                  className="token-input"
-                  type="password"
-                  placeholder="token"
-                  onChange={(e) => setToken(e.target.value)}
-                  aria-label="Studio token"
-                />
-              </div>
-            )}
-
             {error && (
               <div className="err-banner" role="alert">
                 <span>{error}</span>
+                {/* A locked studio is the one failure the page can fix in
+                    place, so the box to fix it with belongs here. */}
+                {needsToken && (
+                  <input
+                    className="token-input"
+                    type="password"
+                    placeholder="studio token"
+                    onChange={(e) => setToken(e.target.value)}
+                    aria-label="Studio token"
+                  />
+                )}
                 <button onClick={() => setError("")} aria-label="Dismiss">
                   <X size={14} />
                 </button>
@@ -1574,7 +1564,7 @@ export function App() {
             )}
           </div>
 
-          <LiveStats online={engineOnline} />
+          <LiveStats />
 
           <p className="trust reveal d5">
             {localCount > 0 ? (

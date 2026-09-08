@@ -1889,15 +1889,6 @@ body::after {
   border-color: color-mix(in srgb, var(--clay) 45%, var(--line));
 }
 
-.live-idle {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  justify-content: center;
-  font-family: var(--font-mono);
-  font-size: 0.74rem;
-  color: var(--ink-3);
-}
 
 .live-dot {
   width: 7px;

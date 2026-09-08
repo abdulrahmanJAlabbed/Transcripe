@@ -18,7 +18,7 @@ export function kindOf(ext: string): Kind {
   return "other";
 }
 
-/** `text` targets go to Whisper on the laptop rather than ffmpeg. */
+/** `text` targets go to Whisper on the engine rather than ffmpeg. */
 export const TARGETS: Record<
   Exclude<Kind, "other">,
   { main: string[]; audio?: string[]; text?: string[] }

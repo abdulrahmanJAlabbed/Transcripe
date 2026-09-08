@@ -100,7 +100,7 @@ function Sparkline({ jobs }: { jobs: Job[] }) {
   );
 }
 
-export function LiveStats({ online }: { online: boolean | null }) {
+export function LiveStats() {
   const [stats, setStats] = useState<Stats | null>(null);
 
   useEffect(() => {
@@ -124,16 +124,9 @@ export function LiveStats({ online }: { online: boolean | null }) {
     };
   }, []);
 
-  if (!online || !stats) {
-    return (
-      <div className="live live-idle">
-        <span className="live-dot off" />
-        <span className="live-idle-text">
-          {online === false ? "engine offline" : "waiting for the engine…"}
-        </span>
-      </div>
-    );
-  }
+  /* Nothing to report is not a status worth reporting. An engine that isn't
+     answering shows up where it matters — in a conversion that needs it. */
+  if (!stats) return null;
 
   const busy = stats.active.length > 0;
 

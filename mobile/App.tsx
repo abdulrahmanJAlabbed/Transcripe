@@ -120,14 +120,12 @@ function Studio() {
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState("");
   const [result, setResult] = useState<FsFile | null>(null);
-  const [engineOn, setEngineOn] = useState<boolean | null>(null);
-  const [engineLocked, setEngineLocked] = useState(false);
   const [canTranscribe, setCanTranscribe] = useState(true);
   const [canData, setCanData] = useState(true);
   /* The engine's upload ceiling. Work done on the phone never meets it. */
   const [maxUploadMb, setMaxUploadMb] = useState(0);
   /* Where the last result was actually made. The row used to claim "on this
-     phone" for everything, back when everything went to the laptop; now that
+     phone" for everything, back when everything went to the server; now that
      some of it is true, it has to be the part that is. */
   const [ranOnPhone, setRanOnPhone] = useState(false);
   /* The picture's own size. Presets and the "now" label both need it, and
@@ -140,7 +138,7 @@ function Studio() {
   const jobRef = useRef<string | null>(null);
   const slide = useRef(new Animated.Value(0)).current;
 
-  /* Cancelling should free the laptop, not just stop this phone listening. */
+  /* Cancelling should free the engine, not just stop this phone listening. */
   const cancelWork = () => {
     const job = jobRef.current;
     if (job) {
@@ -224,28 +222,22 @@ function Studio() {
     pruneCache();
   }, []);
 
-  /* Engine heartbeat. */
+  /* Ask the engine what it can do — quietly.
+   *
+   * Whether the engine is up is not a thing to stare at; it matters only when
+   * something is actually being converted, and then the attempt itself says
+   * so. What this is for is the shape of the choices: an engine without
+   * Whisper shouldn't be offered transcription, and its upload ceiling has to
+   * come from somewhere. */
   useEffect(() => {
     let alive = true;
-    // Two misses before calling it offline: a phone on flaky Wi-Fi (or a
-    // laptop mid-transcode) shouldn't be told the engine died.
-    let misses = 0;
     const ping = async () => {
       const info = await health();
-      if (!alive) return;
-      if (info) {
-        misses = 0;
-        setEngineOn(true);
-        setEngineLocked(!!info.auth_required && !info.authorized);
-        // An engine without Whisper shouldn't be offered transcription.
-        if (info.max_upload_mb) setMaxUploadMb(info.max_upload_mb);
-        if (info.features) {
-          setCanTranscribe(info.features.transcribe !== false);
-          setCanData(info.features.data !== false);
-        }
-      } else {
-        misses += 1;
-        if (misses >= 2) setEngineOn(false);
+      if (!alive || !info) return;
+      if (info.max_upload_mb) setMaxUploadMb(info.max_upload_mb);
+      if (info.features) {
+        setCanTranscribe(info.features.transcribe !== false);
+        setCanData(info.features.data !== false);
       }
     };
     ping();
@@ -469,10 +461,15 @@ function Studio() {
         setPhase("idle");
         return;
       }
+      // The engine's state is news at the moment it stops something, not
+      // before — so everything it could have told you earlier is said here.
+      const message = e?.message ?? "";
       setError(
-        e?.message?.includes("Network request failed")
-          ? `Can't reach the engine at ${API}. Same Wi-Fi? Started with TRANSCRIPE_HOST=0.0.0.0?`
-          : e?.message || "Conversion failed."
+        message.includes("Network request failed")
+          ? "Couldn't reach the engine. Check your connection and try again."
+          : /token/i.test(message)
+          ? "The engine turned that away. Try again in a moment."
+          : message || "Conversion failed."
       );
       setPhase("idle");
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(
@@ -566,26 +563,6 @@ function Studio() {
             <Text style={st.wordmark}>
               Transcripe<Text style={{ color: c.clay }}>.</Text>
             </Text>
-            <View style={st.statusPill}>
-              <View
-                style={[
-                  st.dot,
-                  {
-                    backgroundColor:
-                      engineOn === null ? c.ink3 : engineOn ? c.ok : c.err
-                  }
-                ]}
-              />
-              <Mono style={{ fontSize: 10.5 }}>
-                {engineOn === null
-                  ? "checking"
-                  : !engineOn
-                  ? "engine off"
-                  : engineLocked
-                  ? "locked"
-                  : "engine on"}
-              </Mono>
-            </View>
           </View>
 
           {/* Hero */}
@@ -599,8 +576,8 @@ function Studio() {
               transformed.
             </Display>
             <Body style={{ marginTop: 12 }}>
-              Pick a video or paste a link. Your laptop does the work — nothing
-              touches a cloud.
+              Pick a photo, a video, or paste a link. Photos are handled right
+              here on your phone.
             </Body>
           </View>
 
@@ -714,7 +691,7 @@ function Studio() {
                     {useCookies && <Text style={st.checkMark}>✓</Text>}
                   </View>
                   <Body style={{ flex: 1, fontSize: 13 }}>
-                    Use the laptop's browser cookies for private or age-gated links
+                    Use saved cookies for private or age-gated links
                   </Body>
                 </Tap>
               </View>
@@ -745,7 +722,7 @@ function Studio() {
 
             {textTargets.length > 0 && !!picked && (
               <View style={{ gap: 9 }}>
-                <Label>transcribe — whisper on your laptop</Label>
+                <Label>transcribe — whisper on the engine</Label>
                 <View style={st.chips}>
                   {textTargets.map((t) => (
                     <Chip
@@ -898,31 +875,7 @@ function Studio() {
                   <Text style={{ fontFamily: f.mono, fontSize: 12 }}>
                     transcripe {picked.ext} …
                   </Text>{" "}
-                  on your laptop handles it.
-                </Body>
-              </View>
-            )}
-
-            {engineOn === false && (
-              <View style={st.note}>
-                <Body style={{ fontSize: 13, color: c.ink2 }}>
-                  Engine offline. On your laptop:{" "}
-                  <Text style={{ fontFamily: f.mono, fontSize: 12 }}>
-                    transcripe studio --lan
-                  </Text>
-                </Body>
-              </View>
-            )}
-
-            {engineOn && engineLocked && (
-              <View style={st.note}>
-                <Body style={{ fontSize: 13, color: c.ink2 }}>
-                  The engine is reachable but locked. Copy the token it printed
-                  on startup into{" "}
-                  <Text style={{ fontFamily: f.mono, fontSize: 12 }}>
-                    EXPO_PUBLIC_API_TOKEN
-                  </Text>{" "}
-                  in mobile/.env, then restart Expo.
+                  on your computer handles it.
                 </Body>
               </View>
             )}
@@ -965,7 +918,7 @@ function Studio() {
                     </Text>
                     <Mono style={{ fontSize: 11 }}>
                       {formatBytes(result.size) || "ready"} ·{" "}
-                      {ranOnPhone ? "on this phone" : "on your laptop"}
+                      {ranOnPhone ? "on this phone" : "on the engine"}
                     </Mono>
                   </View>
                 </View>
@@ -1026,7 +979,6 @@ const makeStyles = (c: Palette, isDark: boolean) => {
     letterSpacing: -0.6,
     color: c.ink
   },
-  statusPill: { flexDirection: "row", alignItems: "center", gap: 6 },
   dot: { width: 7, height: 7, borderRadius: 4 },
 
   hero: { width: "100%", marginBottom: 26 },

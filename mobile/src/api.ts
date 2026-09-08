@@ -1,8 +1,13 @@
 import { Directory, File, Paths } from "expo-file-system";
 
-/** Where the local engine lives, as seen from this phone. Set in .env. */
+/** The engine this app talks to.
+ *
+ *  The hosted one, by default and in practice: a phone should not depend on a
+ *  particular laptop being awake, on the same Wi-Fi, and running a command.
+ *  EXPO_PUBLIC_API_URL can still point somewhere else for development.
+ */
 export const API =
-  process.env.EXPO_PUBLIC_API_URL?.replace(/\/+$/, "") || "http://127.0.0.1:8000";
+  process.env.EXPO_PUBLIC_API_URL?.replace(/\/+$/, "") || "https://alabed.site";
 
 /** A studio open to the network prints a token on startup. */
 const TOKEN = process.env.EXPO_PUBLIC_API_TOKEN?.trim() || "";
@@ -104,7 +109,7 @@ export async function cancelJob(job: string): Promise<void> {
       headers: authHeaders()
     });
   } catch {
-    /* the laptop will time the job out on its own */
+    /* the engine will time the job out on its own */
   }
 }
 

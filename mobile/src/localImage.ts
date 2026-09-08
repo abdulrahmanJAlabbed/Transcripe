@@ -1,9 +1,9 @@
 /**
  * Image work done on the phone itself.
  *
- * The laptop is not the only machine in the room. A phone re-encodes a photo
+ * The engine is not the only machine in the room. A phone re-encodes a photo
  * natively in well under a second, and doing it here means the picture never
- * crosses the Wi-Fi to be made smaller — which is the point, since the reason
+ * leaves the device to be made smaller — which is the point, since the reason
  * to shrink a photo is usually that it is about to be uploaded somewhere.
  *
  * It also sidesteps the engine's upload ceiling entirely: a 40 MB photo that
