@@ -126,6 +126,10 @@ function Studio() {
   const [canData, setCanData] = useState(true);
   /* The engine's upload ceiling. Work done on the phone never meets it. */
   const [maxUploadMb, setMaxUploadMb] = useState(0);
+  /* Where the last result was actually made. The row used to claim "on this
+     phone" for everything, back when everything went to the laptop; now that
+     some of it is true, it has to be the part that is. */
+  const [ranOnPhone, setRanOnPhone] = useState(false);
   /* The picture's own size. Presets and the "now" label both need it, and
      guessing would put the wrong numbers on screen. */
   const [natural, setNatural] = useState<{ width: number; height: number } | null>(null);
@@ -362,6 +366,7 @@ function Studio() {
     Keyboard.dismiss();
     setError("");
     setPhase("working");
+    setRanOnPhone(false);
     const controller = new AbortController();
     abortRef.current = controller;
     try {
@@ -420,6 +425,7 @@ function Studio() {
             } catch {
               done = produced;
             }
+            setRanOnPhone(true);
           } catch {
             /* the engine can do what this phone couldn't */
           }
@@ -958,7 +964,8 @@ function Studio() {
                       {result.name}
                     </Text>
                     <Mono style={{ fontSize: 11 }}>
-                      {formatBytes(result.size) || "ready"} · on this phone
+                      {formatBytes(result.size) || "ready"} ·{" "}
+                      {ranOnPhone ? "on this phone" : "on your laptop"}
                     </Mono>
                   </View>
                 </View>
