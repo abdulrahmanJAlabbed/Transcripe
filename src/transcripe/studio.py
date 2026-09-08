@@ -44,13 +44,13 @@ def _find_web_dist() -> str:
 
 WEB_DIST = _find_web_dist()
 
-# Same-origin in production (served under alabed.work/transcripe/ + /api/),
+# Same-origin in production (served under alabed.site/transcripe/ + /api/),
 # plus localhost for dev. allow_credentials with "*" is invalid, so we list origins.
 ALLOWED_ORIGINS = [
     o.strip() for o in os.environ.get(
         "TRANSCRIPE_ORIGINS",
         # site, Vite dev, Expo web dev (native apps aren't subject to CORS)
-        "https://alabed.work,https://www.alabed.work,"
+        "https://alabed.site,https://www.alabed.site,"
         "http://localhost:5173,http://127.0.0.1:5173,"
         "http://localhost:8081,http://localhost:19006",
     ).split(",") if o.strip()

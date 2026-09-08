@@ -266,7 +266,7 @@ device to meet an upload limit. The phone app has the same control. Chrome and E
 From a git checkout, `python server.py` does the same thing. Without a built
 UI the API still runs — the studio says so instead of failing.
 
-There's a public demo at **[alabed.work/transcripe](https://alabed.work/transcripe/)**.
+There's a public demo at **[alabed.site/transcripe](https://alabed.site/transcripe/)**.
 It converts on that server rather than on your machine, and says so — the
 private path is the local install above. Deploy it with:
 
