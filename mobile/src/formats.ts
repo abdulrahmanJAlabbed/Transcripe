@@ -83,6 +83,22 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / 1_073_741_824).toFixed(2)} GB`;
 }
 
+/** "500KB", "2 MB", "500k", "512000" → bytes. Mirrors engines/images.py. */
+export function parseSize(text: string): number | null {
+  const s = String(text).trim().toUpperCase().replace(/\s+/g, "");
+  const m = s.match(/^([\d.]+)(KB|K|MB|M|GB|G|B)?$/);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (!isFinite(n) || n <= 0) return null;
+  const mult =
+    { KB: 1024, K: 1024, MB: 1024 ** 2, M: 1024 ** 2, GB: 1024 ** 3, G: 1024 ** 3, B: 1 }[
+      m[2] ?? "B"
+    ] ?? 1;
+  return Math.round(n * mult);
+}
+
+export const SIZE_PRESETS = ["500KB", "1MB", "2MB"];
+
 export function firstUrl(text: string): string | null {
   return text.match(/https?:\/\/\S+/i)?.[0] ?? null;
 }

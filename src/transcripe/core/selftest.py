@@ -311,6 +311,31 @@ def run_all(include_slow: bool = False) -> list[Result]:
         return "under 20 KB ceiling"
     check("image", "fit-size (max ceiling)", "image_ops", "image", _img_fit_max)
 
+    def _img_fit_auto(d):
+        """The upload-limit case: a photo in a lossless format, held to a
+        budget. Meeting it by shrinking the picture is the wrong answer when
+        re-encoding costs nothing you can see."""
+        from PIL import Image
+        import random
+        scan = d / "scan.png"
+        random.seed(11)
+        width, height = 400, 600
+        im = Image.new("RGB", (width, height))
+        px = im.load()
+        for y in range(height):
+            for x in range(width):
+                n = random.randint(0, 40)
+                px[x, y] = ((x * 255) // width + n, (y * 255) // height + n,
+                            128 + ((x + y) % 64) + n)
+        im.save(scan)
+        o = d / "fitauto.png"
+        out = images.fit_size(scan, NULL, output_path=o,
+                              max_bytes=60 * 1024, target_format="auto")
+        assert out.stat().st_size <= 60 * 1024, "size budget missed"
+        assert Image.open(out).size == (width, height), "resolution spent needlessly"
+        return f"{scan.stat().st_size // 1024} KB → {out.stat().st_size // 1024} KB, full size"
+    check("image", "fit-size (auto keeps resolution)", "image_ops", "image", _img_fit_auto)
+
     def _svg_hd(d):
         svg = d / "logo.svg"
         svg.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="170" height="50">'

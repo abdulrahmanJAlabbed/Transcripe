@@ -53,7 +53,14 @@ Everything runs on **your machine**. No uploads, no cloud, no tracking.
 - **Multi‑language OCR** — auto (Latin + Türkçe + numbers) or pick English / Turkish / Arabic / Chinese / custom codes
 - **Convert** between `.png`, `.jpg`, `.webp`, `.bmp`, `.tiff`, `.gif`, `.heic`, `.avif`, and **`.svg`** (vector → full‑HD raster, `TRANSCRIPE_SVG_MIN` to tune)
 - **Resize** (proportional or exact) and **compress** (quality control)
-- **🎯 Fit to a file‑size rule** — re‑encode to satisfy platform limits like Google's *“min 9.77 KB”* or an upload *“max 2 MB”* (`transcripe image fit-size FILE --min 9.77KB [--max 2MB]`)
+- **🎯 Fit a file‑size limit** — land under an upload cap (*“max 500 KB”*) or over a floor
+  (Google's *“min 9.77 KB”*): `transcripe image fit-size photo.png --max 500KB`.
+  Quality is spent in the order that costs least — colour detail, then compression,
+  and only then resolution — so the picture keeps the size it had on screen unless
+  the budget leaves no other way. The search is a binary search encoded in memory,
+  so it lands *just* under the limit (typically 90–99% of the budget used) instead
+  of far below it. A photo saved as PNG is re‑encoded rather than shrunk;
+  `--format same` keeps the original format, `--format jpg|webp|png|avif` pins one.
 - **Image → PDF**
 
 ### 💬 Subtitles
@@ -193,7 +200,8 @@ transcripe media compress video.mp4 -q low
 transcripe media concat part1.mp3 part2.mp3 -o full.mp3
 transcripe image resize photo.jpg --width 1200
 transcripe image compress photo.jpg -q 50
-transcripe image fit-size logo.png --min 9.77KB       # meet a platform size rule
+transcripe image fit-size photo.png --max 500KB       # land under an upload limit
+transcripe image fit-size logo.png --min 9.77KB      # meet a platform size floor
 transcripe convert subs.srt --to vtt                  # subtitle format convert
 transcripe convert data.csv --to parquet              # tabular any-to-any
 transcripe data pretty api_response.json
@@ -251,7 +259,10 @@ transcripe studio                                  # http://localhost:8000/trans
 One process, one command: it serves the built UI *and* the conversion API, and
 opens your browser. Drop a file anywhere on the page, or paste a link anywhere,
 and it converts locally — including Whisper transcription to `.srt`/`.txt`,
-which runs as a background job you can watch (and cancel). Chrome and Edge offer to install it as a desktop app.
+which runs as a background job you can watch (and cancel). Drop an image and a
+**Maximum size** row appears: pick 500 KB, 1 MB, 2 MB or type your own, and the
+page fits it on your own machine through WebCodecs — the photo never leaves the
+device to meet an upload limit. The phone app has the same control. Chrome and Edge offer to install it as a desktop app.
 From a git checkout, `python server.py` does the same thing. Without a built
 UI the API still runs — the studio says so instead of failing.
 

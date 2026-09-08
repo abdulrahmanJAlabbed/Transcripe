@@ -249,75 +249,269 @@ def parse_size(text: str) -> int:
     return int(round(float(s) * mult))
 
 
-def _save_variant(img, out_path: Path, quality: int | None = None):
-    """Save img to out_path with format-appropriate options; returns byte size."""
-    ext = out_path.suffix.lower()
-    kw = {}
-    if ext in (".jpg", ".jpeg"):
-        if img.mode in ("RGBA", "P"):
+# ── Fitting an image to a file-size budget ──────────────────────────────────
+
+# Encoders with a quality dial to search. Anything else (PNG, BMP, TIFF…) can
+# only be made smaller by throwing pixels away.
+LOSSY_FORMATS = {"jpg", "jpeg", "webp", "avif"}
+
+_QUALITY_CEILING = 95
+# Below this, JPEG/WebP artefacts are uglier than the same picture at fewer
+# pixels, so this is where we stop turning the dial and start scaling.
+_QUALITY_FLOOR = 55
+# Above this there is room to spare — keep full 4:4:4 chroma.
+_CHROMA_KEEP_ABOVE = 80
+
+
+def _pil_format(ext: str) -> str:
+    ext = ext.lower().lstrip(".")
+    return {"jpg": "JPEG", "jpeg": "JPEG", "tif": "TIFF",
+            "tiff": "TIFF"}.get(ext, ext.upper())
+
+
+def _encode(img, ext: str, quality: int | None = None,
+            subsampling: int | None = None, icc: bytes | None = None) -> bytes:
+    """Encode to memory and hand back the bytes.
+
+    Searching for a size means encoding the same picture a dozen times. Writing
+    each attempt to disk is by far the slowest part of that and leaves nothing
+    behind worth keeping, so every trial happens in RAM and only the winner is
+    ever saved.
+    """
+    import io
+
+    fmt = _pil_format(ext)
+    kw: dict = {}
+    if icc:
+        kw["icc_profile"] = icc
+    if fmt == "JPEG":
+        if img.mode != "RGB":
             img = img.convert("RGB")
-        kw = {"quality": quality if quality is not None else 90, "optimize": True}
-    elif ext == ".webp":
-        kw = {"quality": quality if quality is not None else 90}
-    elif ext == ".png":
-        kw = {"optimize": True}
-    img.save(out_path, **kw)
-    return out_path.stat().st_size
+        kw.update(quality=quality or 90, optimize=True, progressive=True,
+                  subsampling=0 if subsampling is None else subsampling)
+    elif fmt == "WEBP":
+        kw.update(quality=quality or 90, method=6)
+    elif fmt == "AVIF":
+        kw.update(quality=quality or 90)
+    elif fmt == "PNG":
+        kw.update(optimize=True, compress_level=9)
+    elif fmt == "TIFF":
+        kw.update(compression="tiff_lzw")
+    elif fmt == "GIF" and img.mode not in ("P", "L"):
+        img = img.convert("P", palette=_pil().ADAPTIVE)
+    buf = io.BytesIO()
+    img.save(buf, format=fmt, **kw)
+    return buf.getvalue()
+
+
+def _best_under(img, ext: str, limit: int, subsampling: int | None,
+                icc: bytes | None) -> tuple[bytes, int] | None:
+    """Highest quality whose encode still fits in `limit`, or None.
+
+    Binary search rather than a walk down from 95: seven encodes cover the
+    whole range, and the answer lands just under the budget instead of far
+    below it — the difference between spending your 500 KB and using 370.
+    """
+    lo, hi = 20, _QUALITY_CEILING
+    best: tuple[bytes, int] | None = None
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        data = _encode(img, ext, mid, subsampling, icc)
+        if len(data) <= limit:
+            best = (data, mid)
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
+def _fit_under(img, ext: str, limit: int, icc: bytes | None):
+    """Squeeze `img` into `limit` bytes, spending the cheapest thing first.
+
+    The order is what makes the result look good: chroma costs less than
+    quality, and quality costs less than resolution. A photo at full size and
+    q70 beats the same photo at q95 and half the pixels every time, so pixels
+    are the last thing to go — not the first.
+
+    Returns (bytes, image_actually_encoded, quality_or_None).
+    """
+    import math
+
+    Image = _pil()
+    is_jpeg = _pil_format(ext) == "JPEG"
+    lossy = ext.lower().lstrip(".") in LOSSY_FORMATS
+
+    if lossy:
+        full = _best_under(img, ext, limit, 0 if is_jpeg else None, icc)
+        if full and full[1] >= _CHROMA_KEEP_ABOVE:
+            return full[0], img, full[1]
+        if is_jpeg:
+            # 4:2:0 halves the colour resolution. Photographs don't show it;
+            # text and line art do — so it is worth spending only once the
+            # quality dial is already tight.
+            reduced = _best_under(img, ext, limit, 2, icc)
+            if reduced and reduced[1] >= _QUALITY_FLOOR:
+                return reduced[0], img, reduced[1]
+        elif full and full[1] >= _QUALITY_FLOOR:
+            return full[0], img, full[1]
+
+    # Out of quality: start removing pixels. File size tracks pixel count
+    # closely, so solve for the scale instead of stepping 15% at a time
+    # toward it — that is the difference between two encodes and nine.
+    sub = 2 if is_jpeg else None
+    probe = _encode(img, ext, _QUALITY_CEILING if lossy else None, sub, icc)
+    scale = min(1.0, math.sqrt(limit / len(probe)) * 0.95) if probe else 1.0
+
+    def attempt(factor: float):
+        """Best encode at this scale, or None if even it overshoots."""
+        width = max(1, round(img.width * factor))
+        height = max(1, round(img.height * factor))
+        shrunk = img if factor >= 1.0 else img.resize((width, height), Image.LANCZOS)
+        if lossy:
+            got = _best_under(shrunk, ext, limit, sub, icc)
+            return (got[0], shrunk, got[1]) if got else None
+        data = _encode(shrunk, ext, None, None, icc)
+        return (data, shrunk, None) if len(data) <= limit else None
+
+    for _ in range(8):
+        found = attempt(scale)
+        if found:
+            # The estimate is deliberately conservative. One corrective step
+            # spends the leftover budget on pixels instead of handing back a
+            # needlessly small picture.
+            if scale < 1.0 and len(found[0]) < limit * 0.9:
+                wider = min(1.0, scale * math.sqrt(limit / len(found[0])) * 0.98)
+                if wider > scale * 1.02:
+                    grown = attempt(wider)
+                    if grown:
+                        return grown
+            return found
+        if min(round(img.width * scale), round(img.height * scale)) <= 16:
+            break
+        scale *= 0.85
+
+    raise RuntimeError(
+        f"Could not reach {limit / 1024:.2f} KB even at 16 px — "
+        "the budget is smaller than any usable image.")
+
+
+def _has_alpha(img) -> bool:
+    return img.mode in ("RGBA", "LA") or (
+        img.mode == "P" and "transparency" in img.info)
+
+
+def _choose_format(img, source_ext: str, limit: int | None,
+                   icc: bytes | None) -> str:
+    """Decide what to encode as when the caller asked for 'auto'.
+
+    Keeping the user's own format is the default and the polite answer. The
+    exception is a photograph living in a lossless one — a scan saved as PNG,
+    a BMP export. Held to a small budget those can only shed pixels, while the
+    same picture as JPEG or WebP meets the budget at full resolution. So the
+    format changes only when keeping it would cost real detail.
+    """
+    ext = source_ext.lower().lstrip(".")
+    if limit is None or ext in LOSSY_FORMATS:
+        return ext
+    if len(_encode(img, ext, None, None, icc)) <= limit:
+        return ext  # fits as it is — no reason to touch the format
+    # WebP is the one that keeps transparency; JPEG is the one everything opens.
+    return "webp" if _has_alpha(img) else "jpg"
+
+
+def planned_extension(input_path: Path, max_bytes: int | None,
+                      target_format: str | None) -> str:
+    """The extension fit_size is going to write, decided in advance.
+
+    The wizard shows you where a file will land and refuses to clobber
+    something already sitting there. Both of those promises need the real
+    name, and with "auto" the format is a decision, not the input's suffix.
+    """
+    source_ext = input_path.suffix.lower().lstrip(".")
+    if target_format and target_format.lower() != "auto":
+        return target_format.lower().lstrip(".")
+    if not target_format:
+        return source_ext
+    img = _open_image(input_path)
+    return _choose_format(img, source_ext, max_bytes, img.info.get("icc_profile"))
 
 
 def fit_size(input_path: Path, console: Console, output_path: Path | None = None,
-             min_bytes: int | None = None, max_bytes: int | None = None):
+             min_bytes: int | None = None, max_bytes: int | None = None,
+             target_format: str | None = None):
     """Re-encode an image so its file size lands within [min_bytes, max_bytes].
 
     Solves platform upload rules like "min 9.77 KB" (Google) or "max 2 MB".
     - Too small → upscale (and, for PNG, add a tiny metadata pad) until ≥ min.
-    - Too large → shrink dimensions / lower quality until ≤ max.
+    - Too large → spend chroma, then quality, then resolution until ≤ max.
     Both bounds may be given at once.
+
+    target_format: an extension to encode as, "auto" to let the tool pick one
+    that keeps the picture intact, or None to keep the source format.
     """
     Image = _pil()
     img = _open_image(input_path)
-    out_path = output_path or (input_path.parent / f"{input_path.stem}_fitted{input_path.suffix}")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    orig = input_path.stat().st_size
 
     if min_bytes is None and max_bytes is None:
         raise ValueError("Give --min and/or --max a target size.")
     if min_bytes and max_bytes and min_bytes > max_bytes:
         raise ValueError("min size is larger than max size")
 
-    ext = out_path.suffix.lower()
-    orig = input_path.stat().st_size
-    size = _save_variant(img, out_path)
+    # A colour profile is part of the picture; carry it through the re-encode.
+    # EXIF is not — _open_image has already baked the orientation into the
+    # pixels, and its thumbnail can be tens of kilobytes of the budget.
+    icc = img.info.get("icc_profile")
 
+    source_ext = input_path.suffix.lower().lstrip(".")
+    if target_format and target_format.lower() != "auto":
+        ext = target_format.lower().lstrip(".")
+    elif target_format:
+        ext = _choose_format(img, source_ext, max_bytes, icc)
+    else:
+        ext = source_ext
+    switched = ext != source_ext
+
+    out_path = output_path or (input_path.parent / f"{input_path.stem}_fitted.{ext}")
+    if out_path.suffix.lower().lstrip(".") != ext:
+        out_path = out_path.with_suffix(f".{ext}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Already inside the budget and no format change asked for? Re-encoding
+    # would only throw away detail to solve a problem that doesn't exist.
+    if (not switched and not min_bytes and max_bytes and orig <= max_bytes
+            and input_path.resolve() != out_path.resolve()):
+        import shutil
+        shutil.copyfile(input_path, out_path)
+        console.print(f"[bold green]✓ Already under {max_bytes / 1024:.2f} KB[/bold green] "
+                      f"[dim]({orig / 1024:.1f} KB, untouched)[/dim]")
+        console.print(f"Saved to: [bold underline]{out_path.name}[/bold underline]")
+        return out_path
+
+    quality = None
     with console.status(f"[bold cyan]Fitting {input_path.name} to size…[/bold cyan]"):
-        # ── Too big → shrink. Lower quality first (lossy formats), then scale. ──
-        if max_bytes and size > max_bytes:
-            quality = 92
-            while size > max_bytes and quality > 20 and ext in (".jpg", ".jpeg", ".webp"):
-                quality -= 8
-                size = _save_variant(img, out_path, quality)
-            while size > max_bytes and min(img.size) > 32:
-                img = img.resize((max(1, int(img.width * 0.85)),
-                                  max(1, int(img.height * 0.85))), Image.LANCZOS)
-                size = _save_variant(img, out_path,
-                                     quality if ext in (".jpg", ".jpeg", ".webp") else None)
+        if max_bytes:
+            data, img, quality = _fit_under(img, ext, max_bytes, icc)
+        else:
+            data = _encode(img, ext, None, None, icc)
 
         # ── Too small → upscale until we clear the floor. ──
-        if min_bytes and size < min_bytes:
+        if min_bytes and len(data) < min_bytes:
             for _ in range(12):
-                if size >= min_bytes:
+                if len(data) >= min_bytes:
                     break
                 img = img.resize((max(1, int(img.width * 1.4)),
                                   max(1, int(img.height * 1.4))), Image.LANCZOS)
-                size = _save_variant(img, out_path)
-            # Last resort for lossless PNG that is still under the floor: pad
-            # trailing bytes in a private chunk so the file meets the minimum
-            # without altering a single pixel.
-            if min_bytes and size < min_bytes and ext == ".png":
-                pad = min_bytes - size
-                with open(out_path, "ab") as f:
-                    f.write(b"\x00" * pad)  # after IEND; ignored by decoders
-                size = out_path.stat().st_size
+                data = _encode(img, ext, quality, None, icc)
+            # Last resort for a lossless format still under the floor: pad
+            # trailing bytes after IEND so the file meets the minimum without
+            # altering a single pixel.
+            if len(data) < min_bytes and ext == "png":
+                data = data + b"\x00" * (min_bytes - len(data))
 
+        out_path.write_bytes(data)
+
+    size = len(data)
     within = (not min_bytes or size >= min_bytes) and (not max_bytes or size <= max_bytes)
     tag = "[bold green]✓" if within else "[bold yellow]⚠ (best effort)"
     bounds = []
@@ -325,13 +519,18 @@ def fit_size(input_path: Path, console: Console, output_path: Path | None = None
         bounds.append(f"min {min_bytes / 1024:.2f} KB")
     if max_bytes:
         bounds.append(f"max {max_bytes / 1024:.2f} KB")
+    detail = f"{img.width}x{img.height}"
+    if quality is not None:
+        detail += f", quality {quality}"
     console.print(f"{tag} {orig / 1024:.1f} KB → {size / 1024:.1f} KB "
-                  f"({img.width}x{img.height}, target {' & '.join(bounds)})[/]")
+                  f"({detail}, target {' & '.join(bounds)})[/]")
+    if switched:
+        console.print(f"[dim]Saved as .{ext} — .{source_ext} is lossless, so meeting "
+                      f"that budget would have meant shrinking the picture.[/dim]")
     console.print(f"Saved to: [bold underline]{out_path.name}[/bold underline]")
     if not within:
         raise RuntimeError(
-            f"Could not fully reach the target ({size / 1024:.2f} KB). "
-            "Try a different format (PNG grows more than JPEG).")
+            f"Could not fully reach the target ({size / 1024:.2f} KB).")
     return out_path
 
 

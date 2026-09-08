@@ -157,7 +157,14 @@ export async function transcribeFile(
 /** Server-side conversion as a job, so the phone can show ffmpeg's own
  *  progress rather than a bar that means nothing. */
 export async function convertFile(
-  input: { uri: string; name: string; mimeType?: string; format: string },
+  input: {
+    uri: string;
+    name: string;
+    mimeType?: string;
+    format: string;
+    /** Images only: an upload limit to land under, in bytes. */
+    maxSize?: number;
+  },
   onProgress?: (fraction: number, stage: string) => void,
   onJob?: (job: string) => void,
   signal?: AbortSignal
@@ -171,6 +178,7 @@ export async function convertFile(
   } as unknown as Blob);
   body.append("targetFormat", input.format);
   body.append("deliver", "job");
+  if (input.maxSize) body.append("maxSize", String(input.maxSize));
 
   const res = await fetch(`${API}/api/convert/file`, {
     method: "POST",

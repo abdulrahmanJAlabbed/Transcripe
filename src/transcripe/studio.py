@@ -1007,11 +1007,28 @@ async def convert_file(
     file: UploadFile = File(...),
     targetFormat: str = Form("txt"),
     deliver: str = Form("stream"),
+    # An upload limit to land under ("500KB", "2MB"). Images only — it is the
+    # one job where the size, not the format, is what the user came for.
+    maxSize: str = Form(""),
 ):
     require_token(request)
     target_fmt = re.sub(r"[^\w]", "", targetFormat.lower()) or "txt"
     temp_dir = tempfile.mkdtemp(prefix="transcripe_file_")
     safe_in, input_path = await save_upload(file, temp_dir)
+
+    fit_bytes = None
+    if maxSize.strip():
+        from transcripe.engines.images import parse_size
+        try:
+            fit_bytes = parse_size(maxSize)
+        except ValueError:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise HTTPException(status_code=422,
+                                detail=f"Could not read '{maxSize}' as a file size.")
+        if fit_bytes < 1024:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise HTTPException(status_code=422,
+                                detail="A size budget under 1 KB can't hold an image.")
 
     base_name = os.path.splitext(safe_in)[0] or "output"
     output_filename = f"{base_name}_converted.{target_fmt}"
@@ -1077,13 +1094,28 @@ async def convert_file(
     is_data_work = src_ext in DATA_FMTS and target_fmt in DATA_FMTS
 
     is_image_work = (
-        target_fmt in IMAGE_FMTS or src_ext in IMAGE_FMTS | {"heic", "heif", "avif"})
-    if is_image_work and target_fmt not in IMAGE_FMTS:
+        target_fmt in IMAGE_FMTS | {"auto"}
+        or src_ext in IMAGE_FMTS | {"heic", "heif", "avif"})
+    # "auto" means "you choose the format, just hit the size" — meaningless
+    # without a budget to hit, so it is only accepted alongside one.
+    if target_fmt == "auto" and not fit_bytes:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise HTTPException(status_code=422,
+                            detail="Pick a format, or give a maximum size to fit.")
+    if is_image_work and target_fmt not in IMAGE_FMTS | {"auto"}:
         shutil.rmtree(temp_dir, ignore_errors=True)
         raise HTTPException(status_code=422,
                             detail=f"Can't turn an image into .{target_fmt}.")
+    if fit_bytes and not is_image_work:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise HTTPException(status_code=422,
+                            detail="A maximum size can only be applied to images.")
 
     def encode(on_progress=None):
+        # fit_size settles its own extension, so this closure may rename the
+        # output; the callers below read these back after it returns.
+        nonlocal output_path, output_filename
+
         if is_subtitle_work or is_data_work:
             import io
             from pathlib import Path
@@ -1109,10 +1141,20 @@ async def convert_file(
 
             from rich.console import Console
 
-            from transcripe.engines.images import convert_image
+            from transcripe.engines.images import convert_image, fit_size
 
-            convert_image(Path(input_path), target_fmt, Console(file=io.StringIO()),
-                          output_path=Path(output_path))
+            quiet = Console(file=io.StringIO())
+            if fit_bytes:
+                # auto may re-encode a lossless photo as JPEG, so take the
+                # name fit_size actually wrote rather than assuming one.
+                written = fit_size(
+                    Path(input_path), quiet, output_path=Path(output_path),
+                    max_bytes=fit_bytes, target_format=target_fmt)
+                output_path = str(written)
+                output_filename = written.name
+            else:
+                convert_image(Path(input_path), target_fmt, quiet,
+                              output_path=Path(output_path))
             return None
         if on_progress:
             res = run_ffmpeg_progress(build_cmd(target_fmt),
