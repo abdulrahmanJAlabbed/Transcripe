@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy the studio to alabed.work — the site at /transcripe/ and the engine
+# Deploy the studio to alabed.site — the site at /transcripe/ and the engine
 # behind /api/. Safe to re-run; every deploy backs up what it replaces.
 #
 #   ./deploy.sh            # site + engine
@@ -71,5 +71,5 @@ case "$WHAT" in
 esac
 
 echo "→ verifying"
-curl -fsS -o /dev/null -w "  /transcripe/ -> %{http_code}\n" https://alabed.work/transcripe/
-printf "  /api/health  -> "; curl -fsS https://alabed.work/api/health; echo
+curl -fsS -o /dev/null -w "  /transcripe/ -> %{http_code}\n" https://alabed.site/transcripe/
+printf "  /api/health  -> "; curl -fsS https://alabed.site/api/health; echo
