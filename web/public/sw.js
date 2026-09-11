@@ -34,6 +34,22 @@ self.addEventListener("fetch", (e) => {
 
   if (url.origin !== location.origin) return;
 
+  /* Built assets carry a content hash in the filename, so a given URL's bytes
+     can never change — a new build arrives under a new name. Cache-first means
+     a repeat visit costs no request at all, and works offline. */
+  if (url.pathname.includes("/assets/")) {
+    e.respondWith(
+      caches.open(CACHE).then(async (cache) => {
+        const hit = await cache.match(e.request);
+        if (hit) return hit;
+        const fresh = await fetch(e.request);
+        if (fresh.ok) cache.put(e.request, fresh.clone());
+        return fresh;
+      })
+    );
+    return;
+  }
+
   // Same-origin app shell: network-first so updates land, cache when offline.
   e.respondWith(
     caches.open(CACHE).then(async (cache) => {

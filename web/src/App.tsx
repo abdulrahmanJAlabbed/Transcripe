@@ -344,10 +344,15 @@ export function App() {
       }
     };
     check();
-    const t = window.setInterval(check, 15000);
+    const t = window.setInterval(() => {
+      // A backgrounded tab learns nothing it can act on.
+      if (!document.hidden) check();
+    }, 15000);
+    document.addEventListener("visibilitychange", check);
     return () => {
       alive = false;
       window.clearInterval(t);
+      document.removeEventListener("visibilitychange", check);
     };
   }, []);
 

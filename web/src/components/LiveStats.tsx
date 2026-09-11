@@ -105,22 +105,45 @@ export function LiveStats() {
 
   useEffect(() => {
     let alive = true;
+    let timer = 0;
+    let busy = false;
+
     const pull = async () => {
+      // A tab nobody is looking at does not need to know.
+      if (document.hidden) return;
       try {
         const res = await api("/api/stats", { signal: AbortSignal.timeout(6000) });
         if (!res.ok) return;
         const data = (await res.json()) as Stats;
-        if (alive) setStats(data);
+        if (!alive) return;
+        busy = data.active.length > 0;
+        setStats(data);
       } catch {
-        /* the heartbeat already reports reachability */
+        /* a conversion reports its own trouble; this panel stays quiet */
       }
     };
-    pull();
-    // Fast enough to feel live, slow enough to stay out of the way.
-    const t = window.setInterval(pull, 3000);
+
+    /* Three seconds is the rate of something worth watching — a job actually
+       running. Idle, it was 1,200 requests an hour per open tab, at a small
+       shared VM, to redraw the same numbers. */
+    const loop = async () => {
+      await pull();
+      if (!alive) return;
+      timer = window.setTimeout(loop, busy ? 3000 : 15000);
+    };
+    loop();
+
+    const onVisible = () => {
+      if (document.hidden || !alive) return;
+      window.clearTimeout(timer);
+      loop();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
     return () => {
       alive = false;
-      window.clearInterval(t);
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
 
