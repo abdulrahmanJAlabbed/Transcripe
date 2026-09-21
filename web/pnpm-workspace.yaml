@@ -1,2 +1,4 @@
+# esbuild ships a per-platform binary from a postinstall script; without this
+# pnpm skips it and vite cannot build.
 allowBuilds:
-  esbuild: set this to true or false
+  esbuild: true

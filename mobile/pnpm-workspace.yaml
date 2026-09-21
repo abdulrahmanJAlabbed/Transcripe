@@ -1,0 +1,7 @@
+# React Native's Gradle and Metro walk node_modules as real directories rather
+# than resolving through symlinks, and EAS Build packages what it finds there.
+# Hoisted still hardlinks out of the shared store, so it costs no extra disk.
+nodeLinker: hoisted
+
+allowBuilds:
+  esbuild: true
