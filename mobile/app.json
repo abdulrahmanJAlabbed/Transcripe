@@ -7,14 +7,8 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
     "primaryColor": "#7c5cff",
     "backgroundColor": "#121316",
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#121316"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "work.alabed.transcripe",
@@ -30,7 +24,6 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#7c5cff"
       },
-      "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false
     },
     "web": {
@@ -51,7 +44,17 @@
             "usesCleartextTraffic": true
           }
         }
-      ]
+      ],
+      "expo-sharing",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#121316"
+        }
+      ],
+      "expo-status-bar"
     ]
   }
 }
