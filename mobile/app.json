@@ -25,7 +25,8 @@
         "backgroundColor": "#7c5cff"
       },
       "predictiveBackGestureEnabled": false,
-      "permissions": [
+      "blockedPermissions": [
+        "android.permission.SYSTEM_ALERT_WINDOW",
         "android.permission.RECORD_AUDIO"
       ]
     },
@@ -40,14 +41,7 @@
           "photosPermission": "Transcripe reads the photos and videos you pick so it can convert them."
         }
       ],
-      [
-        "expo-build-properties",
-        {
-          "android": {
-            "usesCleartextTraffic": true
-          }
-        }
-      ],
+      "expo-build-properties",
       "expo-sharing",
       [
         "expo-splash-screen",
