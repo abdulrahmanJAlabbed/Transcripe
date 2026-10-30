@@ -529,6 +529,20 @@ def ytdlp_quality_args(target_fmt: str, quality: str = "best") -> list:
     return ["-f", "bv*+ba/b", "-S", "res,fps,hdr:12,vcodec:av01:avc1,channels,acodec"]
 
 
+def ytdlp_reason(stderr: str) -> str:
+    """The line that says why a download failed.
+
+    yt-dlp opens with a multi-line "your version is older than 90 days"
+    warning, so the first 180 characters of stderr told users about our
+    upgrade schedule and nothing about their link.
+    """
+    lines = [ln.strip() for ln in (stderr or "").splitlines() if ln.strip()]
+    errors = [ln for ln in lines if ln.startswith("ERROR:")]
+    if errors:
+        return errors[-1][len("ERROR:"):].strip()[:240]
+    return ""
+
+
 def pcm_for_source(path: str) -> str:
     """WAV depth that matches the input — see engines.audio_video."""
     from pathlib import Path
@@ -1123,7 +1137,7 @@ async def convert_url(req: UrlConvertRequest, request: Request):
                 picked = pick_download(temp_dir)
 
             if not picked:
-                clean_err = re.sub(r'\s+', ' ', res.stderr).strip()[:180] if res.stderr else ""
+                clean_err = ytdlp_reason(res.stderr)
                 err_msg = f"Unable to extract media from link. {clean_err if clean_err else 'Verify link accessibility.'}"
                 raise HTTPException(status_code=500, detail=err_msg)
             return picked

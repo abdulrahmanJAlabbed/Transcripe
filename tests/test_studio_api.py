@@ -1056,3 +1056,14 @@ def test_only_the_stream_that_does_not_fit_is_re_encoded(open_studio, tmp_path):
     assert packets(out, "v:0") == packets(src, "v:0")  # identical packets: copied
     codecs = {kind: codec for kind, codec in open_studio.probe_streams(str(out))}
     assert codecs == {"video": "h264", "audio": "aac"}
+
+
+def test_a_failed_download_says_why_not_how_old_we_are(open_studio):
+    """yt-dlp leads with an upgrade nag; the user needs the ERROR line."""
+    stderr = (
+        "WARNING: Your yt-dlp version (2026.07.04) is older than 90 days!\n"
+        "         It is strongly recommended to always use the latest version.\n"
+        "WARNING: [youtube] Falling back to generic n function search\n"
+        "ERROR: [youtube] abc123: Video unavailable. This video is private\n")
+    assert open_studio.ytdlp_reason(stderr) == "[youtube] abc123: Video unavailable. This video is private"
+    assert open_studio.ytdlp_reason("WARNING: only a warning\n") == ""

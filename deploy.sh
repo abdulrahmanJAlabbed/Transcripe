@@ -70,6 +70,9 @@ deploy_engine() {
     # av<19: PyAV 19 dropped an argument faster-whisper 1.2 still passes, and
     # every transcription dies with a TypeError.
     '$API_DIR/venv/bin/pip' install -q 'fastapi>=0.115' uvicorn python-multipart yt-dlp Pillow pillow-heif cairosvg faster-whisper 'av<19'
+    # YouTube changes under yt-dlp every few weeks and a plain install never
+    # upgrades what is already there: the server sat on a 4-month-old copy.
+    '$API_DIR/venv/bin/pip' install -q -U yt-dlp
     rm -f '/tmp/$(basename "$WHEEL")'
     sudo systemctl restart transcripe-api
     sleep 4
