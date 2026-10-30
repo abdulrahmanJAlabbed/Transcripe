@@ -799,6 +799,7 @@ REMOTES = [
     for url in os.environ.get("TRANSCRIPE_REMOTE_URL", "").split(",") if url.strip()
 ]
 REMOTE_PATIENCE = int(os.environ.get("TRANSCRIPE_REMOTE_PATIENCE", "120"))
+SPLIT_MAX_SECONDS = 30 * 60
 
 
 def remote_model() -> str:
@@ -894,6 +895,9 @@ def _run_transcribe(job_id: str, input_path: str, temp_dir: str, fmt: str, trans
                     return drop()
                 _job_update(job_id, status="running",
                             stage=f"loading Whisper ({MODEL_SIZE}) — the first run downloads it")
+                # Splitting holds the whole recording in memory as raw samples
+                # (230 MB an hour), which a small box's service limit won't take.
+                mixed = mixed and media_duration(input_path) <= SPLIT_MAX_SECONDS
                 # The engine narrates to a Rich console; give it one that goes nowhere.
                 with track_job("transcribe", src.name, fmt, src.stat().st_size) as job:
                     transcribe(src, fmt, Console(file=io.StringIO()), output_path=out_path,
