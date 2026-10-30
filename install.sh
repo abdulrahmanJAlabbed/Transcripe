@@ -55,6 +55,13 @@ echo "📥 Installing Python dependencies (this might take a minute)..."
 "$VENV/bin/pip" install -q --upgrade pip
 "$VENV/bin/pip" install -q -r "$PROJECT_DIR/requirements.txt"
 "$VENV/bin/pip" install -q -e "$PROJECT_DIR"
+# An NVIDIA driver without the CUDA toolkit loads Whisper on the GPU and then
+# fails on the first file. These wheels are the libraries it needs (~1 GB),
+# and they turn a GPU that only looked usable into one that is.
+if command -v nvidia-smi >/dev/null 2>&1; then
+    echo "🎮 NVIDIA GPU found — adding the CUDA libraries Whisper uses..."
+    "$VENV/bin/pip" install -q -e "$PROJECT_DIR[gpu]" || echo "   (skipped: transcription will use the CPU)"
+fi
 
 # ── 3. Create the executable wrapper in ~/.local/bin ────────────────────────
 mkdir -p "$HOME/.local/bin"

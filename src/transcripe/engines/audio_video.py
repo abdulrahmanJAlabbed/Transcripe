@@ -19,6 +19,38 @@ _MODEL = None
 _MODEL_KEY = None
 
 
+def _load_pip_cuda() -> None:
+    """Make CUDA libraries installed from pip visible to CTranslate2.
+
+    The nvidia-cublas-cu12 / nvidia-cudnn-cu12 wheels (the [gpu] extra) put
+    their libraries inside site-packages, where the dynamic linker never
+    looks. Loading them here by full path, globally, means CTranslate2's own
+    dlopen("libcublas.so.12") finds them already resident — no
+    LD_LIBRARY_PATH to set before the process starts. A no-op without them.
+    """
+    import ctypes
+    import glob
+    import importlib.util
+
+    libs = []
+    for package in ("nvidia.cublas", "nvidia.cudnn"):
+        spec = importlib.util.find_spec(package)
+        for root in (spec.submodule_search_locations or []) if spec else []:
+            libs += sorted(glob.glob(os.path.join(root, "lib", "*.so*")))
+    # cuDNN's pieces depend on one another; keep passing over the rest until
+    # a pass loads nothing new.
+    while libs:
+        failed = []
+        for lib in libs:
+            try:
+                ctypes.CDLL(lib, mode=ctypes.RTLD_GLOBAL)
+            except OSError:
+                failed.append(lib)
+        if len(failed) == len(libs):
+            break
+        libs = failed
+
+
 def _detect_device() -> tuple[str, str]:
     """Pick the best (device, compute_type). Override via TRANSCRIPE_DEVICE."""
     device = os.environ.get("TRANSCRIPE_DEVICE")
@@ -36,12 +68,25 @@ def get_model(console: Console):
     from faster_whisper import WhisperModel
 
     device, compute = _detect_device()
+    if device == "cuda":
+        _load_pip_cuda()
     key = (MODEL_SIZE, device, compute)
     if _MODEL is not None and _MODEL_KEY == key:
         return _MODEL, device, compute
 
     try:
         _MODEL = WhisperModel(MODEL_SIZE, device=device, compute_type=compute, download_root=str(CACHE_DIR))
+        if device != "cpu":
+            # Loading proves nothing: CTranslate2 opens cuBLAS lazily, so a
+            # machine with the NVIDIA driver but not the CUDA libraries loads
+            # fine and then dies on the first encode with "libcublas.so.12 is
+            # not found". One silent window of encoding settles it up front.
+            import numpy as np
+            from ctranslate2 import StorageView
+
+            fe = _MODEL.feature_extractor
+            _MODEL.model.encode(StorageView.from_array(
+                np.zeros((1, fe.mel_filters.shape[0], fe.nb_max_frames), dtype=np.float32)))
     except Exception as e:
         if device != "cpu":
             console.print(f"[yellow]GPU init failed ({e}); falling back to CPU.[/yellow]")

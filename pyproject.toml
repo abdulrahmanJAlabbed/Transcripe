@@ -35,6 +35,9 @@ dependencies = [
 
 [project.optional-dependencies]
 whisper = ["faster-whisper>=1.0.0", "av<19"]  # PyAV 19 breaks faster-whisper 1.2
+# NVIDIA GPUs: the CUDA 12 libraries CTranslate2 needs, as wheels, for
+# machines that have the driver but not the toolkit.
+gpu = ["nvidia-cublas-cu12", "nvidia-cudnn-cu12>=9,<10"]
 ocr = ["rapidocr>=3.0.0", "onnxruntime>=1.16.0", "easyocr>=1.7.0"]
 pdf = ["pdf2image>=1.16.0", "PyMuPDF>=1.24.0", "pdf2docx>=0.5.8", "ocrmypdf>=16.0.0"]
 docs = ["pypandoc>=1.13", "weasyprint>=60.0"]
