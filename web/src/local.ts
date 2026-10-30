@@ -69,7 +69,8 @@ export async function convertVideoLocally(
     Mp4OutputFormat,
     WebMOutputFormat,
     MkvOutputFormat,
-    ALL_FORMATS
+    ALL_FORMATS,
+    Quality
   } = await import("mediabunny");
 
   const format =
@@ -81,7 +82,23 @@ export async function convertVideoLocally(
 
   const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
   const output = new Output({ format, target: new BufferTarget() });
-  const conversion = await Conversion.init({ input, output });
+  // A track the container already accepts is copied, losslessly; one that
+  // has to be re-encoded gets the encoder's top tier rather than its default
+  // "high". Asking for a quality on every track would force a re-encode of
+  // the ones that could have been copied, which is exactly the loss to avoid.
+  const best = new Quality("very-high");
+  const conversion = await Conversion.init({
+    input,
+    output,
+    video: async (track) =>
+      format.getSupportedVideoCodecs().includes((await track.getCodec())!)
+        ? {}
+        : { quality: best },
+    audio: async (track) =>
+      format.getSupportedAudioCodecs().includes((await track.getCodec())!)
+        ? {}
+        : { quality: best }
+  });
 
   // Some tracks can't live in the target container; rather than silently drop
   // them, hand the job to the engine, which can re-encode properly.

@@ -91,13 +91,51 @@ def pcm_codec_for(input_path: Path) -> str:
     return "pcm_s16le"
 
 
+# One quality policy for the CLI and the studio, set for the best each lossy
+# encoder offers rather than a size compromise: people convert here to keep a
+# file, and a re-encode is a generation of loss they can't undo.
+# mp3 -q:a 0 is LAME's top VBR (~245 kbps, was 2 / ~190); AAC at 256 kbps is
+# where ffmpeg's native encoder stops being audibly different (was 192); Vorbis
+# q8 (~256 kbps, was q6); Opus 192 kbps (was 128).
+AUDIO_ENCODERS = {
+    "mp3": ["-codec:a", "libmp3lame", "-q:a", "0"],
+    "flac": ["-codec:a", "flac"],
+    "ogg": ["-codec:a", "libvorbis", "-q:a", "8"],
+    "opus": ["-codec:a", "libopus", "-b:a", "192k"],
+    "aac": ["-codec:a", "aac", "-b:a", "256k"],
+    # Left to ffmpeg these two came out at its 128 kbps default.
+    "m4a": ["-codec:a", "aac", "-b:a", "256k"],
+    "wma": ["-codec:a", "wmav2", "-b:a", "192k"],
+}
+# The audio track inside a video target.
+VIDEO_AUDIO = ["-codec:a", "aac", "-b:a", "256k"]
+# CRF 18 is x264's "visually lossless" point (was 23, which shows banding and
+# smeared texture on gradients). It costs size, not encode time: the preset is
+# what sets the speed, so the server's job ceiling is unchanged.
+X264_CRF = "18"
+# VP9's constant-quality equivalent (was 32 in the studio, 30 in the CLI).
+VP9_CRF = "24"
+
+
+def audio_encoder_args(target_format: str, input_path: Path) -> list:
+    """ffmpeg arguments for an audio target, depth-preserving for WAV."""
+    if target_format == "wav":
+        return ["-codec:a", pcm_codec_for(input_path)]
+    return list(AUDIO_ENCODERS.get(target_format, []))
+
+
 def fmt_time(s: float) -> str:
     ms = int((s % 1) * 1000)
     return f"{int(s)//3600:02d}:{(int(s)//60)%60:02d}:{int(s)%60:02d},{ms:03d}"
 
 def transcribe(video: Path, target_format: str, console: Console, output_path: Path | None = None,
-               translate: bool = False):
-    """Transcribe (or translate to English, translate=True) audio/video to txt/srt."""
+               translate: bool = False, on_progress=None):
+    """Transcribe (or translate to English, translate=True) audio/video to txt/srt.
+
+    on_progress, if given, receives the fraction of the audio done after each
+    segment — a big model on a small CPU runs for many minutes, and "still
+    transcribing" for twenty of them tells the user nothing.
+    """
     # Anything else would run the whole model and then write an empty file,
     # since only these two have a writer below.
     if target_format not in ("txt", "srt"):
@@ -171,36 +209,22 @@ def convert_media(input_path: Path, target_format: str, console: Console, output
 
     if target_format in audio_targets:
         cmd += ["-vn"]  # strip video track
-        if target_format == "mp3":
-            cmd += ["-codec:a", "libmp3lame", "-q:a", "2"]  # high quality VBR
-        elif target_format == "flac":
-            cmd += ["-codec:a", "flac"]
-        elif target_format == "ogg":
-            cmd += ["-codec:a", "libvorbis", "-q:a", "6"]
-        elif target_format == "opus":
-            cmd += ["-codec:a", "libopus", "-b:a", "128k"]
-        elif target_format == "aac":
-            cmd += ["-codec:a", "aac", "-b:a", "192k"]
-        elif target_format == "wav":
-            # Match the source's depth rather than flattening it to 16-bit.
-            cmd += ["-codec:a", pcm_codec_for(input_path)]
-        # m4a and wma: let ffmpeg auto-select codec
+        cmd += audio_encoder_args(target_format, input_path)
 
     elif target_format in video_targets:
         if target_format == "mp4":
             # -pix_fmt yuv420p: force 4:2:0 chroma so browsers/QuickTime/phones
             # can play it (yuv444/422 sources otherwise produce a valid but
             # unplayable file). +faststart: moov atom up front for web streaming.
-            cmd += ["-codec:v", "libx264", "-preset", "medium", "-crf", "23",
-                    "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                    "-codec:a", "aac", "-b:a", "192k"]
+            cmd += ["-codec:v", "libx264", "-preset", "medium", "-crf", X264_CRF,
+                    "-pix_fmt", "yuv420p", "-movflags", "+faststart", *VIDEO_AUDIO]
         elif target_format == "webm":
-            cmd += ["-codec:v", "libvpx-vp9", "-crf", "30", "-b:v", "0",
-                    "-pix_fmt", "yuv420p", "-codec:a", "libopus"]
+            cmd += ["-codec:v", "libvpx-vp9", "-crf", VP9_CRF, "-b:v", "0",
+                    "-pix_fmt", "yuv420p", "-codec:a", "libopus", "-b:a", "192k"]
         elif target_format in ("mov", "mkv", "avi"):
             # Default to widely-playable H.264 4:2:0 rather than ffmpeg's guess.
-            cmd += ["-codec:v", "libx264", "-preset", "medium", "-crf", "23",
-                    "-pix_fmt", "yuv420p", "-codec:a", "aac", "-b:a", "192k"]
+            cmd += ["-codec:v", "libx264", "-preset", "medium", "-crf", X264_CRF,
+                    "-pix_fmt", "yuv420p", *VIDEO_AUDIO]
         # else: let ffmpeg auto-select codecs
 
     cmd.append(str(out_path))

@@ -1023,3 +1023,36 @@ def test_an_unreachable_remote_is_not_offered(monkeypatch):
 def test_health_names_the_whisper_model(open_studio):
     with TestClient(open_studio.app) as client:
         assert client.get("/api/health").json()["model"]
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not installed")
+def test_only_the_stream_that_does_not_fit_is_re_encoded(open_studio, tmp_path):
+    """H.264 + Opus → mp4: Opus can't go in mp4, H.264 can. The picture must be
+    copied bit for bit, not put through a second lossy generation."""
+    import subprocess
+
+    src = tmp_path / "talk.mkv"
+    made = subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=10:duration=2",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+         "-c:v", "libx264", "-c:a", "libopus", "-shortest", str(src)], capture_output=True)
+    if made.returncode:
+        pytest.skip("this ffmpeg lacks libx264 or libopus")
+
+    def packets(path, stream):
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", stream, "-show_entries",
+             "packet=size", "-of", "csv=p=0", str(path)], capture_output=True, text=True)
+        return out.stdout.split()
+
+    with TestClient(open_studio.app) as client:
+        res = client.post("/api/convert/file",
+                          files={"file": ("talk.mkv", src.read_bytes(), "video/x-matroska")},
+                          data={"targetFormat": "mp4"})
+    assert res.status_code == 200, res.text
+    out = tmp_path / "talk.mp4"
+    out.write_bytes(res.content)
+
+    assert packets(out, "v:0") == packets(src, "v:0")  # identical packets: copied
+    codecs = {kind: codec for kind, codec in open_studio.probe_streams(str(out))}
+    assert codecs == {"video": "h264", "audio": "aac"}

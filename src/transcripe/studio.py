@@ -1238,6 +1238,9 @@ async def convert_file(
     VIDEO_FMTS = {"mp4", "mkv", "mov", "avi", "webm", "flv", "wmv"}
 
     def build_cmd(fmt, allow_hw=True):
+        from transcripe.engines.audio_video import (
+            VIDEO_AUDIO, VP9_CRF, X264_CRF, audio_encoder_args)
+
         base = ["ffmpeg", "-y", "-i", input_path]
         audio_only = fmt in AUDIO_FMTS
 
@@ -1253,30 +1256,44 @@ async def convert_file(
 
         if audio_only:
             base += ["-vn"]  # drop any video stream from an audio target
-            base += {
-                "mp3": ["-codec:a", "libmp3lame", "-q:a", "2"],
-                "flac": ["-codec:a", "flac"],
-                "ogg": ["-codec:a", "libvorbis", "-q:a", "6"],
-                "opus": ["-codec:a", "libopus", "-b:a", "128k"],
-                "aac": ["-codec:a", "aac", "-b:a", "192k"],
-                "wav": ["-codec:a", pcm_for_source(input_path)],
-            }.get(fmt, [])
-        elif fmt == "mp4" or fmt in ("mov", "mkv", "avi"):
-            hw = detect_hw_encoder() if allow_hw else ""
-            if hw:
+            if fmt == "wav":
+                base += ["-codec:a", pcm_for_source(input_path)]
+            else:
+                base += audio_encoder_args(fmt, input_path)
+            return base + [output_path]
+
+        # Re-encode only the stream that doesn't fit. An mkv of H.264 + Opus
+        # bound for mp4 needs new audio — not a second generation of picture,
+        # which is both the slow part and the lossy part.
+        video_ok, audio_ok = CONTAINER_CODECS.get(fmt, (set(), set()))
+        streams = probe_streams(input_path)
+        vcodecs = {codec for kind, codec in streams if kind == "video"}
+        acodecs = {codec for kind, codec in streams if kind == "audio"}
+        copy_video = bool(vcodecs) and vcodecs <= video_ok
+        copy_audio = bool(acodecs) and acodecs <= audio_ok
+
+        if fmt in ("mp4", "mov", "mkv", "avi"):
+            hw = detect_hw_encoder() if allow_hw and not copy_video else ""
+            if copy_video:
+                base += ["-codec:v", "copy"]
+            elif hw:
                 base += HW_ENCODERS[hw]
             else:
-                base += ["-codec:v", "libx264", "-preset", X264_PRESET, "-crf", "23",
+                base += ["-codec:v", "libx264", "-preset", X264_PRESET, "-crf", X264_CRF,
                          "-pix_fmt", "yuv420p"]
-            base += ["-codec:a", "aac", "-b:a", "192k"]
+            base += ["-codec:a", "copy"] if copy_audio else VIDEO_AUDIO
             if fmt == "mp4":
                 base += ["-movflags", "+faststart"]
         elif fmt == "webm":
-            # row-mt + cpu-used are the difference between VP9 running at 2x
-            # real time and something you'd actually wait for.
-            base += ["-codec:v", "libvpx-vp9", "-crf", "32", "-b:v", "0",
-                     "-row-mt", "1", "-cpu-used", "4", "-deadline", "good",
-                     "-pix_fmt", "yuv420p", "-codec:a", "libopus"]
+            if copy_video:
+                base += ["-codec:v", "copy"]
+            else:
+                # row-mt + cpu-used are the difference between VP9 running at
+                # 2x real time and something you'd actually wait for.
+                base += ["-codec:v", "libvpx-vp9", "-crf", VP9_CRF, "-b:v", "0",
+                         "-row-mt", "1", "-cpu-used", "4", "-deadline", "good",
+                         "-pix_fmt", "yuv420p"]
+            base += ["-codec:a", "copy"] if copy_audio else ["-codec:a", "libopus", "-b:a", "192k"]
         return base + [output_path]
 
     IMAGE_FMTS = {"png", "jpg", "jpeg", "webp", "bmp", "tiff", "gif", "ico", "avif"}
