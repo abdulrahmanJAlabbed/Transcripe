@@ -195,7 +195,8 @@ def probe() -> dict[str, Capability]:
 
 # feature -> required capability keys (ocr/pdf_ocr handled specially)
 FEATURES: dict[str, list[str]] = {
-    "transcribe":    ["faster_whisper", "ffmpeg"],
+    # faster-whisper decodes through PyAV, which bundles its own FFmpeg.
+    "transcribe":    ["faster_whisper"],
     "media_convert": ["ffmpeg"],
     "doc_to_pdf":    ["libreoffice"],
     "pandoc":        ["pandoc"],

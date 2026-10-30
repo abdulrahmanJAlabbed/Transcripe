@@ -10,6 +10,7 @@
     transcripe archive list|extract|create
     transcripe model   convert
     transcripe fix-encoding FILE
+    transcripe talk [--toggle | --install-hotkey KEYS]   dictation
 
 Every command is prompt-free: sane defaults, -o/--output to override, exit
 code 1 on failure. The interactive wizard (bare `transcripe`) is unchanged.
@@ -246,6 +247,8 @@ def media_transcribe_cmd(
     file: str = typer.Argument(..., help="Audio or video file"),
     srt: bool = typer.Option(False, "--srt", help="Output subtitles instead of plain text"),
     translate: bool = typer.Option(False, "--translate", help="Translate speech to English"),
+    single: bool = typer.Option(False, "--single",
+                                help="Whole file in one pass: ~3x faster, less accurate, one language"),
     output: str = typer.Option(None, "--output", "-o"),
 ):
     """Transcribe (or translate to English) audio/video with Whisper."""
@@ -254,7 +257,63 @@ def media_transcribe_cmd(
     try:
         capabilities.require("transcribe")
         audio_video.transcribe(_existing(file), "srt" if srt else "txt", console,
-                               output_path=_out(output), translate=translate)
+                               output_path=_out(output), translate=translate, mixed=not single)
+    except Exception as e:
+        _fail(e)
+
+
+def talk_cmd(
+    toggle: bool = typer.Option(False, "--toggle",
+                                help="One press of a desktop shortcut: start listening, or stop "
+                                     "and copy the text. Bind it with --install-hotkey."),
+    install_hotkey: str = typer.Option(None, "--install-hotkey", metavar="KEYS",
+                                       help="Bind --toggle to a GNOME shortcut, e.g. '<Super><Alt>t'"),
+    single: bool = typer.Option(False, "--single",
+                                help="One language throughout: faster than the default mixed mode"),
+    local: bool = typer.Option(False, "--local",
+                               help="Never send the recording anywhere, even on a machine with no GPU"),
+    output: str = typer.Option(None, "--output", "-o", help="Also save the text here"),
+):
+    """🎙️  Speak — Arabic, Turkish, English, mixed — and get the text back."""
+    import shutil
+    import subprocess
+    import sys
+    import time
+
+    from transcripe.engines import talk
+
+    try:
+        if install_hotkey:
+            exe = shutil.which("transcripe") or str(Path(sys.argv[0]).resolve())
+            talk.install_hotkey(install_hotkey, f"{exe} talk --toggle" + (" --single" if single else ""))
+            console.print(f"[green]✓[/green] {install_hotkey} now starts and stops dictation anywhere.")
+            if not (shutil.which("wl-copy") or shutil.which("xclip") or shutil.which("xsel")):
+                console.print("[yellow]For the text to land on the clipboard:[/yellow] "
+                              "sudo apt install wl-clipboard")
+            return
+        if toggle:
+            text = talk.toggle(mixed=not single, local_only=local)
+        else:
+            talk.STATE.mkdir(parents=True, exist_ok=True)
+            wav = talk.STATE / "talk.wav"
+            wav.unlink(missing_ok=True)
+            proc = subprocess.Popen(talk.recorder(wav), stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, start_new_session=True)
+            t0 = time.time()
+            console.print("[bold red]●[/bold red] Listening — press [bold]Enter[/bold] to stop.")
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
+                pass
+            talk.stop(proc)
+            console.print(f"[dim]{time.time() - t0:.0f} s recorded[/dim]")
+            with console.status("[bold cyan]Transcribing…[/bold cyan]"):
+                text = talk.transcribe_wav(wav, mixed=not single, local_only=local)
+            console.print(text or "[yellow]No speech heard.[/yellow]")
+            if text and talk.copy(text):
+                console.print("[dim]Copied to the clipboard.[/dim]")
+        if text and output:
+            _out(output).write_text(text + "\n", encoding="utf-8")
     except Exception as e:
         _fail(e)
 
@@ -541,7 +600,7 @@ def studio_cmd(
 
 # ── registration ────────────────────────────────────────────────────────────
 
-SUBCOMMANDS = {"convert", "pdf", "media", "image", "data", "archive", "model",
+SUBCOMMANDS = {"convert", "talk", "pdf", "media", "image", "data", "archive", "model",
                "ui", "studio", "fix-encoding", "--help", "--doctor", "--self-test", "--slow"}
 
 
@@ -550,6 +609,7 @@ def register(app: typer.Typer) -> None:
     app.command("ui")(ui_cmd)
     app.command("studio")(studio_cmd)
     app.command("fix-encoding")(fix_encoding_cmd)
+    app.command("talk")(talk_cmd)
     app.add_typer(pdf_app, name="pdf")
     app.add_typer(media_app, name="media")
     app.add_typer(image_app, name="image")

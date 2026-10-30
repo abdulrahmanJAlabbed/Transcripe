@@ -22,6 +22,7 @@ Everything runs on **your machine**. No uploads, no cloud, no tracking.
 
 ### 🎬 Video & 🎵 Audio
 - **Transcribe** to text (`.txt`) or subtitles (`.srt`) with **Whisper** (GPU‑accelerated when available)
+- **Dictate** with `transcripe talk`: speak Arabic, Turkish and English in any mix, and get the text on your clipboard. `transcripe talk --install-hotkey '<Super><Alt>t'` makes it work from any app
 - **Extract audio** from video (`.mp4` → `.mp3` / `.wav` / `.flac`)
 - **Convert** between any media format (`.mkv` → `.mp4`, `.wav` → `.ogg`, …)
 - **Video → GIF** (optimized two‑pass palette encoding)
