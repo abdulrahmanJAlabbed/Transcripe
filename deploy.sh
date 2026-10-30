@@ -87,8 +87,11 @@ deploy_pi() {
     mkdir -p \$D ~/.config/transcripe ~/.config/systemd/user
     [ -x \$D/venv/bin/python ] || python3 -m venv \$D/venv
     export TMPDIR=/tmp PIP_NO_CACHE_DIR=1
+    # --force-reinstall: the version rarely changes between deploys. Then the
+    # package's own metadata pulls in everything else — a hand-kept list
+    # missed rich, and the worker died on import.
     \$D/venv/bin/pip install -q --force-reinstall --no-deps '/tmp/$(basename "$WHEEL")'
-    \$D/venv/bin/pip install -q 'fastapi>=0.115' uvicorn python-multipart faster-whisper 'av<19'
+    \$D/venv/bin/pip install -q '/tmp/$(basename "$WHEEL")[whisper]' 'fastapi>=0.115' uvicorn python-multipart
     rm -f '/tmp/$(basename "$WHEEL")'
     if [ ! -s ~/.config/transcripe/worker.env ]; then
       ( umask 077; echo TRANSCRIPE_TOKEN=\$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))') > ~/.config/transcripe/worker.env )
@@ -128,5 +131,6 @@ case "$WHAT" in
 esac
 
 echo "→ verifying"
-curl -fsS -o /dev/null -w "  /transcripe/ -> %{http_code}\n" https://alabed.site/transcripe/
-printf "  /api/health  -> "; curl -fsS https://alabed.site/api/health; echo
+# A restarted engine takes a few seconds to bind; don't report that as a 502.
+curl -fsS --retry 6 --retry-delay 2 --retry-all-errors -o /dev/null -w "  /transcripe/ -> %{http_code}\n" https://alabed.site/transcripe/
+printf "  /api/health  -> "; curl -fsS --retry 6 --retry-delay 2 --retry-all-errors https://alabed.site/api/health; echo
