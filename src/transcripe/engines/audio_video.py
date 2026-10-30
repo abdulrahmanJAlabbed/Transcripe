@@ -111,6 +111,8 @@ def transcribe(video: Path, target_format: str, console: Console, output_path: P
     with console.status(f"[bold cyan]Loading Whisper model ({MODEL_SIZE})…[/bold cyan]") as status:
         model, device, compute = get_model(console)
         console.print(f"[green]Model ready[/green] [dim]({MODEL_SIZE} · {device} · {compute})[/dim]")
+        if on_progress:
+            on_progress(0.0)
 
         status.update(f"[bold yellow]{task_label} {video.name}...[/bold yellow]")
 
@@ -137,6 +139,8 @@ def transcribe(video: Path, target_format: str, console: Console, output_path: P
                     out_f.write(f"{i}\n{fmt_time(seg.start)} --> {fmt_time(seg.end)}\n{text}\n\n")
                     
                 out_f.flush()
+                if on_progress and info.duration:
+                    on_progress(min(0.999, seg.end / info.duration))
                 # Print real-time progress to console (trimming text so it doesn't clutter)
                 display_text = text if len(text) < 50 else text[:47] + "..."
                 console.print(f"  [dim]{fmt_time(seg.start)}[/dim] {display_text}")

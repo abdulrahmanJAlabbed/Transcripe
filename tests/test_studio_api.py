@@ -18,7 +18,8 @@ HAS_FFMPEG = shutil.which("ffmpeg") is not None
 
 def load_studio(monkeypatch, **env):
     """Import the studio with a fresh environment (module-level config)."""
-    for key in ("TRANSCRIPE_TOKEN", "TRANSCRIPE_MAX_UPLOAD_MB"):
+    for key in ("TRANSCRIPE_TOKEN", "TRANSCRIPE_MAX_UPLOAD_MB",
+                "TRANSCRIPE_REMOTE_URL", "TRANSCRIPE_REMOTE_TOKEN"):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -879,3 +880,146 @@ def test_browser_cookies_are_not_read_when_declined(open_studio, monkeypatch):
     monkeypatch.setattr(open_studio.glob, "glob", lambda *a, **k: [])
     assert open_studio.get_rotated_cookie_flag(False) == []
     assert open_studio.get_rotated_cookie_flag(True)[0] == "--cookies-from-browser"
+
+
+# ── remote transcriber ──────────────────────────────────────────────────────
+
+class FakeRemote:
+    """A remote studio over real HTTP: health, one job, one transcript."""
+
+    TRANSCRIPT = "1\n00:00:00,000 --> 00:00:01,000\nmerhaba dünya\n\n"
+
+    def __init__(self, lose_job: bool = False):
+        import http.server
+        import json
+        import threading
+
+        self.uploads, self.polls, self.cancelled = [], 0, False
+        fake = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def reply(self, code, payload):
+                body = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+                self.send_response(code)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                if self.headers.get("X-Transcripe-Token") != "pi-token":
+                    return self.reply(401, {"detail": "token"})
+                if self.path == "/api/health":
+                    return self.reply(200, {"authorized": True, "model": "large-v3-turbo",
+                                            "features": {"transcribe": True}})
+                if self.path == "/api/jobs/r1":
+                    fake.polls += 1
+                    if lose_job:
+                        return self.reply(404, {"detail": "No such job"})
+                    if fake.polls == 1:
+                        return self.reply(200, {"status": "running", "progress": 0.5,
+                                                "stage": "transcribing with large-v3-turbo · 50%"})
+                    return self.reply(200, {"status": "done", "download": "/api/result/t1"})
+                if self.path == "/api/result/t1":
+                    return self.reply(200, FakeRemote.TRANSCRIPT.encode())
+                self.reply(404, {})
+
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers["Content-Length"]))
+                if self.path == "/api/transcribe":
+                    fake.uploads.append((self.headers["Content-Type"], body))
+                    return self.reply(200, {"job": "r1"})
+                if self.path == "/api/jobs/r1/cancel":
+                    fake.cancelled = True
+                    return self.reply(200, {"status": "cancelled"})
+                self.reply(404, {})
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+
+
+def remote_studio(monkeypatch, remote):
+    studio = load_studio(monkeypatch, TRANSCRIPE_REMOTE_URL=remote.url,
+                         TRANSCRIPE_REMOTE_TOKEN="pi-token", TRANSCRIPE_REMOTE_PATIENCE="5")
+    monkeypatch.setattr(studio, "REMOTE_POLL_SECONDS", 0.05)
+    return studio
+
+
+def run_transcription(studio, fixtures):
+    import time as _time
+
+    with TestClient(studio.app) as client:
+        started = client.post("/api/transcribe",
+                              files={"file": ("ders.wav", wav_bytes(fixtures), "audio/wav")},
+                              data={"targetFormat": "srt"})
+        assert started.status_code == 200, started.text
+        job = started.json()["job"]
+        state, stages = {}, set()
+        for _ in range(200):
+            state = client.get(f"/api/jobs/{job}").json()
+            stages.add(state.get("stage"))
+            if state["status"] in ("done", "error"):
+                break
+            _time.sleep(0.02)
+        transcript = client.get(state["download"]).text if state["status"] == "done" else ""
+    return started.json(), state, stages, transcript
+
+
+def test_transcription_goes_to_the_remote_when_it_answers(monkeypatch, fixtures):
+    remote = FakeRemote()
+    try:
+        studio = remote_studio(monkeypatch, remote)
+        started, state, stages, transcript = run_transcription(studio, fixtures)
+    finally:
+        remote.close()
+
+    assert started["model"] == "large-v3-turbo"
+    assert state["status"] == "done", state
+    assert transcript == FakeRemote.TRANSCRIPT
+    assert "transcribing with large-v3-turbo · 50%" in stages
+    content_type, body = remote.uploads[0]
+    assert content_type.startswith("multipart/form-data; boundary=")
+    assert b'name="targetFormat"\r\n\r\nsrt' in body
+    # The user's filename never crosses the wire; ours does.
+    assert b"ders" not in body and b'filename="audio.' in body
+
+
+def test_a_remote_that_loses_the_job_is_finished_here(monkeypatch, fixtures):
+    """A Pi that reboots mid-job must cost time, not the transcription."""
+    import transcripe.engines.audio_video as av
+
+    def local_whisper(src, fmt, console, output_path=None, translate=False, on_progress=None):
+        output_path.write_text("local transcript", encoding="utf-8")
+
+    monkeypatch.setattr(av, "transcribe", local_whisper)
+    remote = FakeRemote(lose_job=True)
+    try:
+        studio = remote_studio(monkeypatch, remote)
+        _, state, stages, transcript = run_transcription(studio, fixtures)
+    finally:
+        remote.close()
+
+    assert state["status"] == "done", state
+    assert transcript == "local transcript"
+    assert remote.polls == 1  # asked once, told the job was gone, moved on
+
+
+def test_an_unreachable_remote_is_not_offered(monkeypatch):
+    import socket
+
+    with socket.socket() as s:  # a port nothing listens on
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    studio = load_studio(monkeypatch, TRANSCRIPE_REMOTE_URL=f"http://127.0.0.1:{port}")
+    assert studio.remote_model() == ""
+
+
+def test_health_names_the_whisper_model(open_studio):
+    with TestClient(open_studio.app) as client:
+        assert client.get("/api/health").json()["model"]

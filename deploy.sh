@@ -5,8 +5,10 @@
 #   ./deploy.sh            # site + engine
 #   ./deploy.sh site       # just the built UI
 #   ./deploy.sh engine     # just the API
+#   ./deploy.sh pi         # the Pi's Whisper worker, and the server's link to it
 #
-# Needs gcloud auth (the `essore` alias uses the same VM).
+# Needs gcloud auth (the `essore` alias uses the same VM), and for `pi` an SSH
+# key the Pi accepts (it is reached over Tailscale).
 set -euo pipefail
 
 ZONE=${TRANSCRIPE_DEPLOY_ZONE:-us-central1-a}
@@ -14,6 +16,7 @@ VM=${TRANSCRIPE_DEPLOY_VM:-portfolio-vm}
 PROJECT=${TRANSCRIPE_DEPLOY_PROJECT:-cella-b04d1}
 SITE_DIR=${TRANSCRIPE_SITE_DIR:-/var/www/portfolio/transcripe}
 API_DIR=${TRANSCRIPE_API_DIR:-/opt/transcripe-api}
+PI=${TRANSCRIPE_PI:-cella@100.80.127.103}
 
 WHAT=${1:-all}
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -39,7 +42,7 @@ deploy_site() {
   echo "✓ site deployed"
 }
 
-deploy_engine() {
+build_wheel() {
   echo "→ building the wheel"
   rm -f dist/*.whl
   # The project venv is where `build` lives; system python usually lacks it.
@@ -49,6 +52,10 @@ deploy_engine() {
   done
   "$PY" -m build --wheel >/dev/null
   WHEEL=$(ls dist/*.whl | head -1)
+}
+
+deploy_engine() {
+  build_wheel
   put "$WHEEL" "/tmp/$(basename "$WHEEL")"
   run "set -e
     sudo cp '$API_DIR/server.py' /var/backups/transcripe-server-\$(date +%Y%m%d-%H%M%S).py 2>/dev/null || true
@@ -70,11 +77,54 @@ deploy_engine() {
   echo "✓ engine deployed"
 }
 
+deploy_pi() {
+  build_wheel
+  scp -q "$WHEEL" deploy/pi/transcripe-worker.service deploy/pi/transcripe-tunnel.service "$PI:/tmp/"
+  # The SD card failed once: pip's scratch and cache stay in tmpfs, and the
+  # only lasting writes are the venv and the model, each written once.
+  ssh "$PI" "set -e
+    D=\$HOME/transcripe-worker
+    mkdir -p \$D ~/.config/transcripe ~/.config/systemd/user
+    [ -x \$D/venv/bin/python ] || python3 -m venv \$D/venv
+    export TMPDIR=/tmp PIP_NO_CACHE_DIR=1
+    \$D/venv/bin/pip install -q --force-reinstall --no-deps '/tmp/$(basename "$WHEEL")'
+    \$D/venv/bin/pip install -q 'fastapi>=0.115' uvicorn python-multipart faster-whisper 'av<19'
+    rm -f '/tmp/$(basename "$WHEEL")'
+    if [ ! -s ~/.config/transcripe/worker.env ]; then
+      ( umask 077; echo TRANSCRIPE_TOKEN=\$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))') > ~/.config/transcripe/worker.env )
+    fi
+    mv /tmp/transcripe-worker.service /tmp/transcripe-tunnel.service ~/.config/systemd/user/
+    systemctl --user daemon-reload
+    systemctl --user enable --quiet transcripe-worker transcripe-tunnel
+    systemctl --user restart transcripe-worker transcripe-tunnel"
+
+  # The server learns where the worker is and the token it wants. stdin, so
+  # the token never sits in a process list on either end.
+  { echo "TRANSCRIPE_REMOTE_URL=http://127.0.0.1:8110"
+    ssh "$PI" cat .config/transcripe/worker.env | sed 's/^TRANSCRIPE_TOKEN=/TRANSCRIPE_REMOTE_TOKEN=/'
+  } | run "set -e
+    UNIT=/etc/systemd/system/transcripe-api.service
+    sudo install -d -m 755 /etc/transcripe
+    cat > /tmp/remote.env; chmod 600 /tmp/remote.env
+    changed=0
+    sudo cmp -s /tmp/remote.env /etc/transcripe/remote.env || { sudo install -m 600 -o root /tmp/remote.env /etc/transcripe/remote.env; changed=1; }
+    rm -f /tmp/remote.env
+    if ! grep -q remote.env \$UNIT; then
+      sudo sed -i '/^ExecStart=/i EnvironmentFile=-/etc/transcripe/remote.env' \$UNIT
+      sudo systemctl daemon-reload; changed=1
+    fi
+    # Restarting drops jobs in flight, so only when something changed.
+    [ \$changed = 1 ] && sudo systemctl restart transcripe-api && sleep 4 || true
+    systemctl is-active transcripe-api"
+  echo "✓ pi worker deployed"
+}
+
 case "$WHAT" in
   site)   deploy_site ;;
   engine) deploy_engine ;;
+  pi)     deploy_pi ;;
   all)    deploy_site; deploy_engine ;;
-  *)      echo "usage: $0 [all|site|engine]" >&2; exit 2 ;;
+  *)      echo "usage: $0 [all|site|engine|pi]" >&2; exit 2 ;;
 esac
 
 echo "→ verifying"

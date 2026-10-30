@@ -400,6 +400,8 @@ def engine_features() -> dict:
 def health_check(request: Request):
     """Open on purpose, so a client can tell a stopped engine from a locked
     one. Says whether a token is required and whether this one passes."""
+    from transcripe.engines.audio_video import MODEL_SIZE
+
     return {
         "status": "ok",
         "engine": "Transcripe Studio",
@@ -407,6 +409,8 @@ def health_check(request: Request):
         "authorized": _token_ok(request),
         "max_upload_mb": round(MAX_UPLOAD_BYTES / 1024 / 1024),
         "features": engine_features(),
+        # Which Whisper this engine runs, so another studio can offload to it.
+        "model": MODEL_SIZE,
     }
 
 
@@ -756,7 +760,148 @@ def _sweeper() -> None:
 threading.Thread(target=_sweeper, daemon=True, name="transcripe-sweeper").start()
 
 
-def _run_transcribe(job_id: str, input_path: str, temp_dir: str, fmt: str, translate: bool) -> None:
+def _job_cancelled(job_id: str) -> bool:
+    with _jobs_lock:
+        return bool(_jobs.get(job_id, {}).get("cancelled"))
+
+
+# --- Remote transcriber ---------------------------------------------------
+# Two shared cores manage Whisper `base` at best, and `base` mangles Arabic and
+# Turkish. A stronger machine (the owner's Pi, reverse-tunnelled to this box)
+# runs this same studio with a model worth having: while it answers,
+# transcription goes there, and when it doesn't, the work stays here.
+REMOTE_URL = os.environ.get("TRANSCRIPE_REMOTE_URL", "").strip().rstrip("/")
+REMOTE_TOKEN = os.environ.get("TRANSCRIPE_REMOTE_TOKEN", "").strip()
+# The tunnel rides Wi-Fi and reconnects on its own, and the remote job keeps
+# running meanwhile, so an outage shorter than this is waited out rather than
+# thrown away by starting over on the slow model.
+REMOTE_PATIENCE = int(os.environ.get("TRANSCRIPE_REMOTE_PATIENCE", "120"))
+REMOTE_POLL_SECONDS = 2.0
+
+
+class RemoteGone(Exception):
+    """The remote transcriber can't finish this job; do it here instead."""
+
+
+def _remote(path: str, data=None, headers=None, timeout: float = 10):
+    import urllib.request
+
+    return urllib.request.urlopen(urllib.request.Request(
+        f"{REMOTE_URL}{path}", data=data,
+        headers={"X-Transcripe-Token": REMOTE_TOKEN, **(headers or {})}), timeout=timeout)
+
+
+def remote_model() -> str:
+    """The remote's Whisper model when it is up and will take work, else ""."""
+    import json
+
+    if not REMOTE_URL:
+        return ""
+    try:
+        with _remote("/api/health", timeout=3) as res:
+            health = json.load(res)
+    except (OSError, ValueError):
+        return ""
+    if health.get("authorized") and health.get("features", {}).get("transcribe"):
+        return health.get("model") or ""
+    return ""
+
+
+def _upload_remote(path: str, fmt: str, translate: bool) -> str:
+    """Stream a file into the remote's /api/transcribe; returns its job id."""
+    import json
+
+    boundary = secrets.token_hex(16)
+    fields = "".join(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'
+        for name, value in (("targetFormat", fmt), ("translate", str(translate).lower())))
+    # An ASCII name of our own: the client's (often Arabic) filename has no
+    # business in a header, and the transcript is named on this side anyway.
+    head = (fields + f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
+            f'filename="audio{os.path.splitext(path)[1]}"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n").encode()
+    tail = f"\r\n--{boundary}--\r\n".encode()
+
+    def body():
+        yield head
+        with open(path, "rb") as f:
+            while chunk := f.read(1024 * 256):
+                yield chunk
+        yield tail
+
+    with _remote("/api/transcribe", data=body(), timeout=120, headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Content-Length": str(len(head) + os.path.getsize(path) + len(tail))}) as res:
+        return json.load(res)["job"]
+
+
+def _transcribe_remote(job_id: str, input_path: str, temp_dir: str, fmt: str,
+                       translate: bool, out_path: str, model: str) -> bool:
+    """Run one transcription on the remote, mirroring its progress into this
+    job. False if the user cancelled; raises RemoteGone if the remote can't
+    finish it."""
+    import json
+    import urllib.error
+
+    _job_update(job_id, status="running", stage="preparing the audio")
+    # Whisper hears 16 kHz mono and nothing else, and the remote sits behind a
+    # Wi-Fi link: a 100 MB video goes over as a few megabytes of Opus.
+    audio = os.path.join(temp_dir, "speech.ogg")
+    try:
+        extracted = subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-i", input_path, "-vn", "-ac", "1",
+             "-ar", "16000", "-c:a", "libopus", "-b:a", "48k", audio],
+            capture_output=True, timeout=JOB_TIMEOUT).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        extracted = False
+    send = audio if extracted and os.path.getsize(audio) > 0 else input_path
+
+    _job_update(job_id, stage=f"sending the audio to {model}")
+    try:
+        remote_job = _upload_remote(send, fmt, translate)
+    except (OSError, ValueError, KeyError) as e:
+        raise RemoteGone(f"upload failed: {e}")
+
+    answered = time.time()
+    while True:
+        time.sleep(REMOTE_POLL_SECONDS)
+        if _job_cancelled(job_id):
+            try:
+                _remote(f"/api/jobs/{remote_job}/cancel", data=b"", timeout=5).close()
+            except OSError:
+                pass  # it'll expire there on its own
+            return False
+        try:
+            with _remote(f"/api/jobs/{remote_job}") as res:
+                state = json.load(res)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise RemoteGone("the remote restarted and lost the job")
+            state = None
+        except (OSError, ValueError):
+            state = None
+        if state is None:
+            if time.time() - answered > REMOTE_PATIENCE:
+                raise RemoteGone("the remote stopped answering")
+            continue
+        answered = time.time()
+        if state.get("status") in ("error", "cancelled"):
+            raise RemoteGone(state.get("detail") or state.get("status"))
+        if state.get("status") == "done":
+            break
+        _job_update(job_id, progress=state.get("progress", 0.0),
+                    stage=state.get("stage") or f"transcribing with {model}")
+
+    try:
+        with _remote(state["download"], timeout=60) as res, open(out_path, "wb") as f:
+            shutil.copyfileobj(res, f)
+    except (OSError, KeyError) as e:
+        raise RemoteGone(f"could not fetch the transcript: {e}")
+    return True
+
+
+def _run_transcribe(job_id: str, input_path: str, temp_dir: str, fmt: str, translate: bool,
+                    remote: str = "") -> None:
     import io
     from pathlib import Path
 
@@ -764,40 +909,58 @@ def _run_transcribe(job_id: str, input_path: str, temp_dir: str, fmt: str, trans
 
     from transcripe.engines.audio_video import MODEL_SIZE, transcribe
 
-    def cancelled() -> bool:
-        with _jobs_lock:
-            return bool(_jobs.get(job_id, {}).get("cancelled"))
+    src = Path(input_path)
+    out_path = src.with_suffix(f".{fmt}")
+
+    def drop() -> None:
+        # Free the disk now instead of parking a transcript nobody wants.
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        _job_update(job_id, status="cancelled", stage="")
+
+    def progress(fraction: float) -> None:
+        _job_update(job_id, progress=round(fraction, 3),
+                    stage=f"transcribing with {MODEL_SIZE} · {round(fraction * 100)}%")
 
     try:
-        if not _whisper_lock.acquire(blocking=False):
-            _job_update(job_id, status="running", stage="waiting for the transcriber")
-            _whisper_lock.acquire()
-        try:
-            # Someone gave up while this waited its turn — don't start at all.
-            if cancelled():
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                _job_update(job_id, status="cancelled", stage="")
-                return
-            _job_update(job_id, status="running",
-                        stage=f"loading Whisper ({MODEL_SIZE}) — the first run downloads it")
-            src = Path(input_path)
-            out_path = src.with_suffix(f".{fmt}")
-            # The engine narrates to a Rich console; give it one that goes nowhere.
-            with track_job("transcribe", src.name, fmt, src.stat().st_size) as job:
-                transcribe(src, fmt, Console(file=io.StringIO()), output_path=out_path,
-                           translate=translate)
-                if out_path.exists():
-                    job.bytes_out = out_path.stat().st_size
-        finally:
-            _whisper_lock.release()
+        if remote:
+            try:
+                with track_job("transcribe", src.name, fmt, src.stat().st_size) as job:
+                    finished = _transcribe_remote(job_id, input_path, temp_dir, fmt,
+                                                  translate, str(out_path), remote)
+                    if out_path.exists():
+                        job.bytes_out = out_path.stat().st_size
+                if not finished:
+                    return drop()
+            except RemoteGone:
+                # Never lose someone's transcription to a Wi-Fi drop: start
+                # over here, slower and rougher, rather than fail.
+                remote = ""
+                out_path.unlink(missing_ok=True)
+                _job_update(job_id, progress=0.0,
+                            stage=f"switching to the backup transcriber ({MODEL_SIZE})")
+        if not remote:
+            if not _whisper_lock.acquire(blocking=False):
+                _job_update(job_id, status="running", stage="waiting for the transcriber")
+                _whisper_lock.acquire()
+            try:
+                # Someone gave up while this waited its turn — don't start at all.
+                if _job_cancelled(job_id):
+                    return drop()
+                _job_update(job_id, status="running",
+                            stage=f"loading Whisper ({MODEL_SIZE}) — the first run downloads it")
+                # The engine narrates to a Rich console; give it one that goes nowhere.
+                with track_job("transcribe", src.name, fmt, src.stat().st_size) as job:
+                    transcribe(src, fmt, Console(file=io.StringIO()), output_path=out_path,
+                               translate=translate, on_progress=progress)
+                    if out_path.exists():
+                        job.bytes_out = out_path.stat().st_size
+            finally:
+                _whisper_lock.release()
         if not out_path.exists():
             raise RuntimeError("Whisper produced no output")
-        if cancelled():
-            # Free the disk now instead of parking a transcript nobody wants.
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            _job_update(job_id, status="cancelled", stage="")
-            return
-        _job_update(job_id, status="done", stage="", **stash_result(
+        if _job_cancelled(job_id):
+            return drop()
+        _job_update(job_id, status="done", stage="", progress=1.0, **stash_result(
             str(out_path), temp_dir, out_path.name))
     except Exception as e:  # surfaced verbatim to the client
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -816,15 +979,20 @@ async def start_transcribe(
     translate: bool = Form(False),
 ):
     """Kick off a transcription and hand back a job id to poll."""
+    import asyncio
+
     require_token(request)
     fmt = "srt" if targetFormat.lower().strip().lstrip(".") == "srt" else "txt"
 
-    try:
-        import faster_whisper  # noqa: F401
-    except ImportError:
-        raise HTTPException(
-            status_code=501,
-            detail="Transcription needs Whisper — pip install 'transcripe[whisper]'")
+    # Asked per job, not cached: the remote comes and goes with its Wi-Fi.
+    remote = await asyncio.to_thread(remote_model)
+    if not remote:
+        try:
+            import faster_whisper  # noqa: F401
+        except ImportError:
+            raise HTTPException(
+                status_code=501,
+                detail="Transcription needs Whisper — pip install 'transcripe[whisper]'")
 
     temp_dir = tempfile.mkdtemp(prefix="transcripe_stt_")
     _, input_path = await save_upload(file, temp_dir)
@@ -835,12 +1003,12 @@ async def start_transcribe(
         _jobs[job_id] = {"status": "queued", "stage": "queued", "touched": time.time()}
     threading.Thread(
         target=_run_transcribe,
-        args=(job_id, input_path, temp_dir, fmt, translate),
+        args=(job_id, input_path, temp_dir, fmt, translate, remote),
         daemon=True,
     ).start()
 
     from transcripe.engines.audio_video import MODEL_SIZE
-    return {"job": job_id, "model": MODEL_SIZE}
+    return {"job": job_id, "model": remote or MODEL_SIZE}
 
 
 @app.get("/api/jobs/{job_id}")
