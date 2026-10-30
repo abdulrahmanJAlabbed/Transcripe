@@ -173,13 +173,56 @@ def fmt_time(s: float) -> str:
     ms = int((s % 1) * 1000)
     return f"{int(s)//3600:02d}:{(int(s)//60)%60:02d}:{int(s)%60:02d},{ms:03d}"
 
+def _by_utterance(model, video: Path, translate: bool):
+    """Transcribe each spoken stretch on its own, in its own language.
+
+    Whisper settles on one language and carries it forward: each window is
+    decoded with the last one's text as its prompt. On speech that switches
+    language it wrote the English and Turkish sentences of a mixed clip as
+    Arabic-script nonsense (72.8% word error rate; 66.5% even with
+    faster-whisper's per-segment detection). Cut at the speaker's pauses and
+    decided afresh for each piece, with no prompt carried over, the same clip
+    came out at 11.0%, every piece's language detected at probability 1.00.
+    The price is speed, so this is for speech that mixes, not the default.
+    """
+    from types import SimpleNamespace
+
+    from faster_whisper import decode_audio
+    from faster_whisper.vad import VadOptions, get_speech_timestamps
+
+    rate = 16000
+    audio = decode_audio(str(video), sampling_rate=rate)
+    spans = get_speech_timestamps(audio, VadOptions(min_silence_duration_ms=500, speech_pad_ms=200))
+
+    def segments():
+        for span in spans:
+            piece = audio[span["start"]:span["end"]]
+            if len(piece) < rate // 2:  # a cough, a click: nothing to decide a language from
+                continue
+            offset = span["start"] / rate
+            # language=None: the language is detected on this piece alone, and
+            # faster-whisper reuses that encoder pass for the first window.
+            pieces, _ = model.transcribe(
+                piece, beam_size=BEAM_SIZE, language=None,
+                task="translate" if translate else "transcribe",
+                condition_on_previous_text=False, vad_filter=False)
+            for seg in pieces:
+                yield SimpleNamespace(start=seg.start + offset, end=seg.end + offset, text=seg.text)
+
+    info = SimpleNamespace(language="mixed", language_probability=1.0, duration=len(audio) / rate)
+    return segments(), info
+
+
 def transcribe(video: Path, target_format: str, console: Console, output_path: Path | None = None,
-               translate: bool = False, on_progress=None):
+               translate: bool = False, on_progress=None, mixed: bool = False):
     """Transcribe (or translate to English, translate=True) audio/video to txt/srt.
 
     on_progress, if given, receives the fraction of the audio done after each
     segment — a big model on a small CPU runs for many minutes, and "still
     transcribing" for twenty of them tells the user nothing.
+
+    mixed=True is for speech that switches language as it goes; see
+    _by_utterance.
     """
     # Anything else would run the whole model and then write an empty file,
     # since only these two have a writer below.
@@ -200,13 +243,16 @@ def transcribe(video: Path, target_format: str, console: Console, output_path: P
         status.update(f"[bold yellow]{task_label} {video.name}...[/bold yellow]")
 
         t0 = time.time()
-        segments, info = model.transcribe(
-            str(video),
-            beam_size=BEAM_SIZE,
-            task="translate" if translate else "transcribe",
-            vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=500),
-        )
+        if mixed:
+            segments, info = _by_utterance(model, video, translate)
+        else:
+            segments, info = model.transcribe(
+                str(video),
+                beam_size=BEAM_SIZE,
+                task="translate" if translate else "transcribe",
+                vad_filter=True,
+                vad_parameters=dict(min_silence_duration_ms=500),
+            )
         
         console.print(f"Detected Language: [bold]{info.language}[/bold] ({info.language_probability:.0%})")
         console.print(f"Duration: [bold]{info.duration:.1f}s[/bold]")

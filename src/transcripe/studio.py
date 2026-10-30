@@ -821,14 +821,15 @@ def remote_model() -> str:
     return ""
 
 
-def _upload_remote(path: str, fmt: str, translate: bool) -> str:
+def _upload_remote(path: str, fmt: str, translate: bool, mixed: bool) -> str:
     """Stream a file into the remote's /api/transcribe; returns its job id."""
     import json
 
     boundary = secrets.token_hex(16)
     fields = "".join(
         f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'
-        for name, value in (("targetFormat", fmt), ("translate", str(translate).lower())))
+        for name, value in (("targetFormat", fmt), ("translate", str(translate).lower()),
+                            ("mixed", str(mixed).lower())))
     # An ASCII name of our own: the client's (often Arabic) filename has no
     # business in a header, and the transcript is named on this side anyway.
     head = (fields + f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
@@ -850,7 +851,7 @@ def _upload_remote(path: str, fmt: str, translate: bool) -> str:
 
 
 def _transcribe_remote(job_id: str, input_path: str, temp_dir: str, fmt: str,
-                       translate: bool, out_path: str, model: str) -> bool:
+                       translate: bool, mixed: bool, out_path: str, model: str) -> bool:
     """Run one transcription on the remote, mirroring its progress into this
     job. False if the user cancelled; raises RemoteGone if the remote can't
     finish it."""
@@ -872,7 +873,7 @@ def _transcribe_remote(job_id: str, input_path: str, temp_dir: str, fmt: str,
 
     _job_update(job_id, stage=f"sending the audio to {model}")
     try:
-        remote_job = _upload_remote(send, fmt, translate)
+        remote_job = _upload_remote(send, fmt, translate, mixed)
     except (OSError, ValueError, KeyError) as e:
         raise RemoteGone(f"upload failed: {e}")
 
@@ -915,7 +916,7 @@ def _transcribe_remote(job_id: str, input_path: str, temp_dir: str, fmt: str,
 
 
 def _run_transcribe(job_id: str, input_path: str, temp_dir: str, fmt: str, translate: bool,
-                    remote: str = "") -> None:
+                    remote: str = "", mixed: bool = False) -> None:
     import io
     from pathlib import Path
 
@@ -940,7 +941,7 @@ def _run_transcribe(job_id: str, input_path: str, temp_dir: str, fmt: str, trans
             try:
                 with track_job("transcribe", src.name, fmt, src.stat().st_size) as job:
                     finished = _transcribe_remote(job_id, input_path, temp_dir, fmt,
-                                                  translate, str(out_path), remote)
+                                                  translate, mixed, str(out_path), remote)
                     if out_path.exists():
                         job.bytes_out = out_path.stat().st_size
                 if not finished:
@@ -965,7 +966,7 @@ def _run_transcribe(job_id: str, input_path: str, temp_dir: str, fmt: str, trans
                 # The engine narrates to a Rich console; give it one that goes nowhere.
                 with track_job("transcribe", src.name, fmt, src.stat().st_size) as job:
                     transcribe(src, fmt, Console(file=io.StringIO()), output_path=out_path,
-                               translate=translate, on_progress=progress)
+                               translate=translate, on_progress=progress, mixed=mixed)
                     if out_path.exists():
                         job.bytes_out = out_path.stat().st_size
             finally:
@@ -991,6 +992,8 @@ async def start_transcribe(
     file: UploadFile = File(...),
     targetFormat: str = Form("srt"),
     translate: bool = Form(False),
+    # Speech that switches language mid-recording (dictation, mostly).
+    mixed: bool = Form(False),
 ):
     """Kick off a transcription and hand back a job id to poll."""
     import asyncio
@@ -1017,7 +1020,7 @@ async def start_transcribe(
         _jobs[job_id] = {"status": "queued", "stage": "queued", "touched": time.time()}
     threading.Thread(
         target=_run_transcribe,
-        args=(job_id, input_path, temp_dir, fmt, translate, remote),
+        args=(job_id, input_path, temp_dir, fmt, translate, remote, mixed),
         daemon=True,
     ).start()
 

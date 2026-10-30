@@ -957,7 +957,7 @@ def run_transcription(studio, fixtures):
     with TestClient(studio.app) as client:
         started = client.post("/api/transcribe",
                               files={"file": ("ders.wav", wav_bytes(fixtures), "audio/wav")},
-                              data={"targetFormat": "srt"})
+                              data={"targetFormat": "srt", "mixed": "true"})
         assert started.status_code == 200, started.text
         job = started.json()["job"]
         state, stages = {}, set()
@@ -986,6 +986,7 @@ def test_transcription_goes_to_the_remote_when_it_answers(monkeypatch, fixtures)
     content_type, body = remote.uploads[0]
     assert content_type.startswith("multipart/form-data; boundary=")
     assert b'name="targetFormat"\r\n\r\nsrt' in body
+    assert b'name="mixed"\r\n\r\ntrue' in body  # dictation's mode travels with it
     # The user's filename never crosses the wire; ours does.
     assert b"ders" not in body and b'filename="audio.' in body
 
@@ -994,7 +995,11 @@ def test_a_remote_that_loses_the_job_is_finished_here(monkeypatch, fixtures):
     """A Pi that reboots mid-job must cost time, not the transcription."""
     import transcripe.engines.audio_video as av
 
-    def local_whisper(src, fmt, console, output_path=None, translate=False, on_progress=None):
+    asked = {}
+
+    def local_whisper(src, fmt, console, output_path=None, translate=False, on_progress=None,
+                      mixed=False):
+        asked["mixed"] = mixed
         output_path.write_text("local transcript", encoding="utf-8")
 
     monkeypatch.setattr(av, "transcribe", local_whisper)
@@ -1008,6 +1013,7 @@ def test_a_remote_that_loses_the_job_is_finished_here(monkeypatch, fixtures):
     assert state["status"] == "done", state
     assert transcript == "local transcript"
     assert remote.polls == 1  # asked once, told the job was gone, moved on
+    assert asked["mixed"] is True  # and the fallback honours the mode too
 
 
 def test_an_unreachable_remote_is_not_offered(monkeypatch):
