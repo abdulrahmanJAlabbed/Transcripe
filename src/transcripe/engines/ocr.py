@@ -25,9 +25,21 @@ _RAPID_OK = {
 def _get_rapid():
     global _rapid
     if _rapid is None:
-        from rapidocr_onnxruntime import RapidOCR
+        # `rapidocr` 3.x. Its predecessor `rapidocr-onnxruntime` stopped at
+        # 1.2.3 and has no build for current Pythons, so the requirement on it
+        # could never be met and took every other dependency down with it.
+        from rapidocr import RapidOCR
         _rapid = RapidOCR()
     return _rapid
+
+
+def _rapid_read(source) -> list[tuple]:
+    """[(box, text, score)], box being four [x, y] corners, as RapidOCR 1.x
+    returned them; 3.x answers with an object of parallel arrays instead."""
+    out = _get_rapid()(source)
+    if out.boxes is None or not out.txts:
+        return []
+    return list(zip(out.boxes.tolist(), out.txts, out.scores))
 
 
 def _get_easy(langs: tuple):
@@ -65,7 +77,7 @@ def _use_rapid(langs) -> bool:
     if langs and any(l not in _RAPID_OK for l in langs):
         return False
     try:
-        import rapidocr_onnxruntime  # noqa: F401
+        import rapidocr  # noqa: F401
         return True
     except Exception:
         return False
@@ -88,8 +100,7 @@ def ocr_boxes(image, langs: list[str] | None = None) -> list[tuple]:
     lang_tuple = tuple(langs) if langs else None
     out = []
     if _use_rapid(langs):
-        result, _ = _get_rapid()(arr)
-        for box, text, score in (result or []):
+        for box, text, score in _rapid_read(arr):
             if not text.strip():
                 continue
             xs = [p[0] for p in box]
@@ -117,8 +128,7 @@ def ocr_image(image_path: Path, langs: list[str] | None = None) -> str:
     for eng in order:
         try:
             if eng == "rapid":
-                result, _ = _get_rapid()(str(image_path))
-                return _rapid_to_text(result)
+                return _rapid_to_text(_rapid_read(str(image_path)))
             else:
                 reader = _get_easy(lang_tuple or ("en",))
                 return "\n".join(reader.readtext(str(image_path), detail=0))

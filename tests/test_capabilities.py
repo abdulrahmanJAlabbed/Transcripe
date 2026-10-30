@@ -5,7 +5,7 @@ from transcripe.core import capabilities
 def test_probe_returns_all_keys():
     caps = capabilities.probe()
     for key in ("ffmpeg", "libreoffice", "msoffice", "poppler", "pandoc",
-                "rapidocr_onnxruntime", "easyocr", "faster_whisper",
+                "rapidocr", "easyocr", "faster_whisper",
                 "pypdf", "pdf2image", "pandas", "openpyxl", "yaml", "PIL", "gpu"):
         assert key in caps, f"missing capability key: {key}"
         assert isinstance(caps[key].ok, bool)

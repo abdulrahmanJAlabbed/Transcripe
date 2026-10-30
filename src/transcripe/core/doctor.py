@@ -18,7 +18,7 @@ def print_environment(console: Console) -> None:
     table.add_column("Used for", style="dim")
 
     order = ["ffmpeg", "libreoffice", "msoffice", "poppler", "pandoc", "node",
-             "rapidocr_onnxruntime", "easyocr", "faster_whisper", "pypdf", "pdf2image",
+             "rapidocr", "easyocr", "faster_whisper", "pypdf", "pdf2image",
              "fitz", "pdf2docx", "ocrmypdf", "weasyprint", "chromium",
              "pandas", "openpyxl", "pyarrow", "yaml", "charset_normalizer", "py7zr", "rarfile",
              "trimesh", "PIL", "gpu"]

@@ -147,7 +147,7 @@ def probe() -> dict[str, Capability]:
         'python -c "import pypandoc; pypandoc.download_pandoc()"', "document format conversion")
 
     lib_specs = [
-        ("rapidocr_onnxruntime", "RapidOCR", "OCR (primary engine)"),
+        ("rapidocr", "RapidOCR", "OCR (primary engine)"),
         ("easyocr", "EasyOCR", "OCR (fallback / extra scripts)"),
         ("faster_whisper", "faster-whisper", "speech transcription"),
         ("pypdf", "pypdf", "PDF text / split / merge"),
@@ -228,7 +228,7 @@ def has(*keys: str) -> bool:
 
 def ocr_backend() -> str | None:
     caps = probe()
-    if caps["rapidocr_onnxruntime"].ok:
+    if caps["rapidocr"].ok:
         return "rapidocr"
     if caps["easyocr"].ok:
         return "easyocr"
@@ -262,12 +262,12 @@ def missing_for(feature: str) -> list[Capability]:
     """Which capabilities are missing for a feature (for friendly error hints)."""
     caps = probe()
     if feature == "ocr":
-        return [] if ocr_backend() else [caps["rapidocr_onnxruntime"]]
+        return [] if ocr_backend() else [caps["rapidocr"]]
     if feature == "pdf_ocr":
         need = ["poppler", "pdf2image"]
         miss = [caps[k] for k in need if not caps[k].ok]
         if not ocr_backend():
-            miss.append(caps["rapidocr_onnxruntime"])
+            miss.append(caps["rapidocr"])
         return miss
     if feature == "doc_to_pdf":
         return [] if (caps["libreoffice"].ok or caps["msoffice"].ok) else [caps["libreoffice"]]
