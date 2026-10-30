@@ -1,0 +1,21 @@
+# ~/.config/systemd/user/ on the PC, installed by `./deploy.sh pc`.
+# Carries the worker to 127.0.0.1:8111 on portfolio-vm. The key behind it can
+# open that one listener and nothing else (see deploy/README.md).
+[Unit]
+Description=Transcripe: tunnel the PC's Whisper worker to alabed.site
+After=network-online.target
+
+[Service]
+# ExitOnForwardFailure: a listener left over from a dropped link makes this
+# exit and retry until sshd reaps it (~45 s), instead of sitting connected
+# with nothing forwarded.
+ExecStart=/usr/bin/ssh -N -T -i %h/.ssh/transcripe_tunnel -o IdentitiesOnly=yes \
+    -o UserKnownHostsFile=%h/.ssh/transcripe_known_hosts -o StrictHostKeyChecking=yes \
+    -o BatchMode=yes -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+    -R 127.0.0.1:8111:127.0.0.1:8111 transcripetunnel@136.111.79.139
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

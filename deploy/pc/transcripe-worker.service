@@ -1,0 +1,27 @@
+# ~/.config/systemd/user/ on the PC, installed by `./deploy.sh pc`.
+# The best transcriber there is while this machine is on: the server tries it
+# first, then the Pi, then itself. `transcripe talk` uses it too, so a dictation
+# finds the model already on the GPU instead of loading a second copy.
+[Unit]
+Description=Transcripe: GPU Whisper worker for alabed.site
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/Desktop/transcripe
+# TRANSCRIPE_TOKEN=<shared with the server's /etc/transcripe/remote.env>
+EnvironmentFile=%h/.config/transcripe/worker.env
+# large-v3 at int8_float16, split at pauses, on this GTX 1660 SUPER (5 min of
+# FLEURS): Turkish 12.6% WER, English 9.9%, Arabic 10.6%, mixed 9.2%, about 3x
+# faster than real time. Slightly ahead of turbo on 3 of those 4.
+Environment=TRANSCRIPE_MODEL=large-v3
+Environment=TRANSCRIPE_PARALLEL=1
+Environment=TRANSCRIPE_ORIGINS=
+# It's a desktop: give the GPU back after ten quiet minutes.
+Environment=TRANSCRIPE_MODEL_IDLE=600
+ExecStart=%h/Desktop/transcripe/.venv/bin/uvicorn transcripe.studio:app --host 127.0.0.1 --port 8111 --workers 1
+Nice=5
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

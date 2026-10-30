@@ -17,6 +17,17 @@ BEAM_SIZE = int(os.environ.get("TRANSCRIPE_BEAM", "5"))
 # Cached Whisper model so batches don't reload it for every file.
 _MODEL = None
 _MODEL_KEY = None
+_MODEL_USED = 0.0
+# Seconds unused before a long-running studio gives the model's memory back.
+# Off by default; a GPU on someone's desktop is the case for turning it on.
+MODEL_IDLE = int(os.environ.get("TRANSCRIPE_MODEL_IDLE", "0"))
+
+
+def release_idle_model() -> None:
+    """Free the model if it has sat unused. Only call with no job running."""
+    global _MODEL, _MODEL_KEY
+    if _MODEL is not None and MODEL_IDLE and time.time() - _MODEL_USED > MODEL_IDLE:
+        _MODEL = _MODEL_KEY = None
 
 
 def _load_pip_cuda() -> None:
@@ -58,8 +69,21 @@ def _detect_device() -> tuple[str, str]:
         compute = os.environ.get("TRANSCRIPE_COMPUTE", "float16" if device == "cuda" else "int8")
         return device, compute
     if shutil.which("nvidia-smi"):
-        return "cuda", os.environ.get("TRANSCRIPE_COMPUTE", "float16")
+        return "cuda", os.environ.get("TRANSCRIPE_COMPUTE", _gpu_compute())
     return "cpu", os.environ.get("TRANSCRIPE_COMPUTE", "int8")
+
+
+def _gpu_compute() -> str:
+    """float16 where it fits. large-v3 with beam search ran a 6 GB GTX 1660
+    out of memory mid-file at float16; int8_float16 needs about half."""
+    import subprocess
+
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=10).stdout
+        return "float16" if int(out.split()[0]) >= 8000 else "int8_float16"
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return "int8_float16"
 
 
 def get_model(console: Console):
@@ -182,8 +206,12 @@ def _by_utterance(model, video: Path, translate: bool):
     Arabic-script nonsense (72.8% word error rate; 66.5% even with
     faster-whisper's per-segment detection). Cut at the speaker's pauses and
     decided afresh for each piece, with no prompt carried over, the same clip
-    came out at 11.0%, every piece's language detected at probability 1.00.
-    The price is speed, so this is for speech that mixes, not the default.
+    came out at 11.0%.
+
+    It is the better way for one language too, because a bad window can no
+    longer poison the ones after it (large-v3-turbo, 5 minutes of FLEURS):
+    English 33.7% → 11.3%, Arabic 13.0% → 9.9%, Turkish 16.0% → 13.6%. The
+    price is about three times the runtime, which is why it can be turned off.
     """
     from types import SimpleNamespace
 
@@ -214,15 +242,16 @@ def _by_utterance(model, video: Path, translate: bool):
 
 
 def transcribe(video: Path, target_format: str, console: Console, output_path: Path | None = None,
-               translate: bool = False, on_progress=None, mixed: bool = False):
+               translate: bool = False, on_progress=None, mixed: bool = True):
     """Transcribe (or translate to English, translate=True) audio/video to txt/srt.
 
     on_progress, if given, receives the fraction of the audio done after each
     segment — a big model on a small CPU runs for many minutes, and "still
     transcribing" for twenty of them tells the user nothing.
 
-    mixed=True is for speech that switches language as it goes; see
-    _by_utterance.
+    mixed=True, the default, transcribes pause by pause so that the language
+    can change and a bad window stays contained; see _by_utterance. False is
+    about three times faster and measurably less accurate.
     """
     # Anything else would run the whole model and then write an empty file,
     # since only these two have a writer below.
@@ -276,6 +305,8 @@ def transcribe(video: Path, target_format: str, console: Console, output_path: P
 
         elapsed = time.time() - t0
         speed = info.duration / elapsed if elapsed else 0
+        global _MODEL_USED
+        _MODEL_USED = time.time()
         console.print(f"\n[bold green]✓ Done in {elapsed/60:.1f} min ({speed:.1f}x real-time)[/bold green]")
         console.print(f"Saved to: [bold underline]{txt_path.name}[/bold underline]")
 

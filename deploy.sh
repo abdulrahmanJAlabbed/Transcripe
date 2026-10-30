@@ -6,6 +6,7 @@
 #   ./deploy.sh site       # just the built UI
 #   ./deploy.sh engine     # just the API
 #   ./deploy.sh pi         # the Pi's Whisper worker, and the server's link to it
+#   ./deploy.sh pc         # the same for this PC's GPU, run on the PC itself
 #
 # Needs gcloud auth (the `essore` alias uses the same VM), and for `pi` an SSH
 # key the Pi accepts (it is reached over Tailscale).
@@ -17,6 +18,10 @@ PROJECT=${TRANSCRIPE_DEPLOY_PROJECT:-cella-b04d1}
 SITE_DIR=${TRANSCRIPE_SITE_DIR:-/var/www/portfolio/transcripe}
 API_DIR=${TRANSCRIPE_API_DIR:-/opt/transcripe-api}
 PI=${TRANSCRIPE_PI:-cella@100.80.127.103}
+# Best first: the server takes the first that answers. Each is a reverse tunnel.
+REMOTES=http://127.0.0.1:8111,http://127.0.0.1:8110
+TUNNEL_HOST=136.111.79.139
+TUNNEL_HOST_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICX5jcLWJ3H90O0RWMXuo1VfYTYpoFjONbm4raAo+6wN"
 
 WHAT=${1:-all}
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -106,7 +111,7 @@ deploy_pi() {
 
   # The server learns where the worker is and the token it wants. stdin, so
   # the token never sits in a process list on either end.
-  { echo "TRANSCRIPE_REMOTE_URL=http://127.0.0.1:8110"
+  { echo "TRANSCRIPE_REMOTE_URL=$REMOTES"
     ssh "$PI" cat .config/transcripe/worker.env | sed 's/^TRANSCRIPE_TOKEN=/TRANSCRIPE_REMOTE_TOKEN=/'
   } | run "set -e
     UNIT=/etc/systemd/system/transcripe-api.service
@@ -125,12 +130,41 @@ deploy_pi() {
   echo "✓ pi worker deployed"
 }
 
+deploy_pc() {
+  mkdir -p ~/.config/transcripe ~/.config/systemd/user
+  [ -f ~/.ssh/transcripe_tunnel ] || ssh-keygen -q -t ed25519 -N "" -C "transcripe-tunnel@pc" -f ~/.ssh/transcripe_tunnel
+  echo "$TUNNEL_HOST $TUNNEL_HOST_KEY" > ~/.ssh/transcripe_known_hosts
+  # This key may open port 8111 on the server and nothing else. The worker's
+  # token comes from the server, over stdout, so the Pi needn't be on for this.
+  cat ~/.ssh/transcripe_tunnel.pub | run "set -e
+    KEYS=/var/lib/transcripetunnel/.ssh/authorized_keys
+    read -r PUB
+    sudo grep -qF \"\$PUB\" \$KEYS || echo \"restrict,port-forwarding,permitlisten=\\\"127.0.0.1:8111\\\",permitopen=\\\"127.0.0.1:9\\\",command=\\\"/usr/sbin/nologin\\\" \$PUB\" | sudo tee -a \$KEYS >/dev/null"
+  ( umask 077; run "sudo sed -n 's/^TRANSCRIPE_REMOTE_TOKEN=/TRANSCRIPE_TOKEN=/p' /etc/transcripe/remote.env" | grep '^TRANSCRIPE_TOKEN=' > ~/.config/transcripe/worker.env ) || true
+  grep -q '^TRANSCRIPE_TOKEN=.' ~/.config/transcripe/worker.env || { echo "no token on the server: run ./deploy.sh pi first" >&2; exit 1; }
+  "${PY:-.venv/bin/python}" -m pip install -q -e ".[whisper,gpu,studio]"
+  cp deploy/pc/transcripe-worker.service deploy/pc/transcripe-tunnel.service ~/.config/systemd/user/
+  systemctl --user daemon-reload
+  systemctl --user enable --quiet transcripe-worker transcripe-tunnel
+  systemctl --user restart transcripe-worker transcripe-tunnel
+  # The server's list of workers; a restart only if it changed.
+  run "set -e
+    sudo sed 's#^TRANSCRIPE_REMOTE_URL=.*#TRANSCRIPE_REMOTE_URL=$REMOTES#' /etc/transcripe/remote.env > /tmp/remote.env
+    if ! sudo cmp -s /tmp/remote.env /etc/transcripe/remote.env; then
+      sudo install -m 600 -o root /tmp/remote.env /etc/transcripe/remote.env
+      sudo systemctl restart transcripe-api
+    fi
+    rm -f /tmp/remote.env"
+  echo "✓ pc worker deployed"
+}
+
 case "$WHAT" in
   site)   deploy_site ;;
   engine) deploy_engine ;;
   pi)     deploy_pi ;;
+  pc)     deploy_pc ;;
   all)    deploy_site; deploy_engine ;;
-  *)      echo "usage: $0 [all|site|engine|pi]" >&2; exit 2 ;;
+  *)      echo "usage: $0 [all|site|engine|pi|pc]" >&2; exit 2 ;;
 esac
 
 echo "→ verifying"

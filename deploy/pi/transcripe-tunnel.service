@@ -1,6 +1,6 @@
 # ~/.config/systemd/user/ on the Pi, installed by `./deploy.sh pi`.
 # Carries the worker to 127.0.0.1:8110 on portfolio-vm. The key behind it can
-# open that one listener and nothing else (see deploy/pi/README.md).
+# open that one listener and nothing else (see deploy/README.md).
 [Unit]
 Description=Transcripe: tunnel the Pi's Whisper worker to alabed.site
 After=network-online.target

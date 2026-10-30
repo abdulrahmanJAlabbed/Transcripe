@@ -889,7 +889,7 @@ class FakeRemote:
 
     TRANSCRIPT = "1\n00:00:00,000 --> 00:00:01,000\nmerhaba dünya\n\n"
 
-    def __init__(self, lose_job: bool = False):
+    def __init__(self, lose_job: bool = False, text: str | None = None):
         import http.server
         import json
         import threading
@@ -923,7 +923,7 @@ class FakeRemote:
                                                 "stage": "transcribing with large-v3-turbo · 50%"})
                     return self.reply(200, {"status": "done", "download": "/api/result/t1"})
                 if self.path == "/api/result/t1":
-                    return self.reply(200, FakeRemote.TRANSCRIPT.encode())
+                    return self.reply(200, (text or FakeRemote.TRANSCRIPT).encode())
                 self.reply(404, {})
 
             def do_POST(self):
@@ -944,10 +944,12 @@ class FakeRemote:
         self.server.shutdown()
 
 
-def remote_studio(monkeypatch, remote):
-    studio = load_studio(monkeypatch, TRANSCRIPE_REMOTE_URL=remote.url,
+def remote_studio(monkeypatch, *remotes):
+    from transcripe.engines import remote as remote_engine
+
+    studio = load_studio(monkeypatch, TRANSCRIPE_REMOTE_URL=",".join(r.url for r in remotes),
                          TRANSCRIPE_REMOTE_TOKEN="pi-token", TRANSCRIPE_REMOTE_PATIENCE="5")
-    monkeypatch.setattr(studio, "REMOTE_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(remote_engine, "POLL_SECONDS", 0.05)
     return studio
 
 
@@ -1014,6 +1016,38 @@ def test_a_remote_that_loses_the_job_is_finished_here(monkeypatch, fixtures):
     assert transcript == "local transcript"
     assert remote.polls == 1  # asked once, told the job was gone, moved on
     assert asked["mixed"] is True  # and the fallback honours the mode too
+
+
+def test_the_next_machine_takes_over_when_the_first_goes_away(monkeypatch, fixtures):
+    """The PC shuts down mid-job: the Pi finishes it, not the weak server."""
+    pc, pi = FakeRemote(lose_job=True), FakeRemote(text="from the pi")
+    try:
+        studio = remote_studio(monkeypatch, pc, pi)
+        _, state, _, transcript = run_transcription(studio, fixtures)
+    finally:
+        pc.close()
+        pi.close()
+
+    assert state["status"] == "done", state
+    assert transcript == "from the pi"
+    assert len(pc.uploads) == 1 and len(pi.uploads) == 1
+
+
+def test_a_machine_that_is_off_is_skipped(monkeypatch, fixtures):
+    import socket
+
+    with socket.socket() as s:  # the PC is off: nothing listens on its port
+        s.bind(("127.0.0.1", 0))
+        off = type("Off", (), {"url": f"http://127.0.0.1:{s.getsockname()[1]}"})()
+    pi = FakeRemote(text="from the pi")
+    try:
+        studio = remote_studio(monkeypatch, off, pi)
+        started, state, _, transcript = run_transcription(studio, fixtures)
+    finally:
+        pi.close()
+
+    assert started["model"] == "large-v3-turbo"
+    assert transcript == "from the pi"
 
 
 def test_an_unreachable_remote_is_not_offered(monkeypatch):
