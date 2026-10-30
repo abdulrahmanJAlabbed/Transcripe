@@ -13,7 +13,10 @@ echo "🚀 Installing Transcripe..."
 install_system_deps() {
     if command -v apt-get >/dev/null 2>&1; then
         echo "🐧 Debian/Ubuntu detected — installing system dependencies (sudo)..."
-        sudo apt-get update -qq
+        # One broken third-party repo fails `apt-get update`; under set -e that
+        # used to end the install here, before the `transcripe` command was
+        # ever created — leaving zsh to cd into the folder of that name instead.
+        sudo apt-get update -qq || true
         sudo apt-get install -y ffmpeg libreoffice poppler-utils pandoc python3-tk unar nodejs npm \
             tesseract-ocr tesseract-ocr-ara tesseract-ocr-tur || true
     elif command -v dnf >/dev/null 2>&1; then
