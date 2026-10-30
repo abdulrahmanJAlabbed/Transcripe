@@ -60,7 +60,9 @@ deploy_engine() {
     # transcription model runner — the VM pins TRANSCRIPE_MODEL=base in its
     # systemd unit, since the package default of large-v3 wants 4 GB it
     # hasn't got.
-    '$API_DIR/venv/bin/pip' install -q 'fastapi>=0.115' uvicorn python-multipart yt-dlp Pillow pillow-heif cairosvg faster-whisper
+    # av<19: PyAV 19 dropped an argument faster-whisper 1.2 still passes, and
+    # every transcription dies with a TypeError.
+    '$API_DIR/venv/bin/pip' install -q 'fastapi>=0.115' uvicorn python-multipart yt-dlp Pillow pillow-heif cairosvg faster-whisper 'av<19'
     rm -f '/tmp/$(basename "$WHEEL")'
     sudo systemctl restart transcripe-api
     sleep 4
