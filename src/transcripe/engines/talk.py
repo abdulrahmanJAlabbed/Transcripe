@@ -49,6 +49,20 @@ def recorder(wav: Path) -> list[str]:
     raise RuntimeError("No way to record: install PipeWire (pw-record), alsa-utils or ffmpeg")
 
 
+def wait_for_audio(wav: Path, seconds: float = 6) -> bool:
+    """True once samples are really arriving.
+
+    A sound card asleep takes up to two seconds to wake (3 s of recording once
+    held 1.15 s of audio). Saying "listening" before that loses the first words.
+    """
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if wav.exists() and wav.stat().st_size > 2048:
+            return True
+        time.sleep(0.05)
+    return False
+
+
 def stop(proc_or_pid) -> None:
     """Stop a recorder the way it expects, so the WAV header is finished."""
     pid = proc_or_pid if isinstance(proc_or_pid, int) else proc_or_pid.pid
@@ -172,6 +186,11 @@ def toggle(mixed: bool = True, local_only: bool = False) -> str | None:
         proc = subprocess.Popen(recorder(wav), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 start_new_session=True)
         pid_file.write_text(str(proc.pid))
+        if not wait_for_audio(wav):
+            stop(proc.pid)
+            pid_file.unlink(missing_ok=True)
+            notify("The microphone isn't giving any audio", "Check Settings → Sound → Input.")
+            return ""
         notify("Listening…", "Press the shortcut again to stop.")
         return None
 

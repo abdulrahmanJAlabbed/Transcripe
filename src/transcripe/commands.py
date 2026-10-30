@@ -299,6 +299,9 @@ def talk_cmd(
             wav.unlink(missing_ok=True)
             proc = subprocess.Popen(talk.recorder(wav), stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL, start_new_session=True)
+            if not talk.wait_for_audio(wav):
+                talk.stop(proc)
+                raise RuntimeError("The microphone isn't giving any audio. Check Settings → Sound → Input.")
             t0 = time.time()
             console.print("[bold red]●[/bold red] Listening — press [bold]Enter[/bold] to stop.")
             try:

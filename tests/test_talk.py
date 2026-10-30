@@ -38,6 +38,15 @@ def test_first_press_listens_second_press_delivers(state, monkeypatch):
     assert not (state / "recording.pid").exists()
 
 
+def test_a_silent_microphone_is_reported_not_recorded(state, monkeypatch):
+    said = []
+    monkeypatch.setattr(talk, "notify", lambda title, body="": said.append(title))
+    monkeypatch.setattr(talk, "wait_for_audio", lambda wav: False)
+    assert talk.toggle() == ""
+    assert said == ["The microphone isn't giving any audio"]
+    assert not (state / "recording.pid").exists()
+
+
 def test_a_recorder_that_died_means_a_fresh_start(state):
     (state / "recording.pid").write_text("999999")
     assert talk.toggle() is None  # starts over rather than transcribing nothing
